@@ -36,7 +36,7 @@ def test_runtimes_importable():
     assert TerminalInteractionRuntime is not None
 
 
-def test_claude_runtime_importable_as_module():
-    """ClaudeAgentRuntime should be importable from its module (not from top-level)."""
-    from iriai_compose.runtimes.claude import ClaudeAgentRuntime
-    assert ClaudeAgentRuntime is not None
+def test_claude_runtime_moved_to_build_v2():
+    """ClaudeAgentRuntime has been moved to iriai-build-v2."""
+    import importlib
+    assert importlib.util.find_spec("iriai_compose.runtimes.claude") is None

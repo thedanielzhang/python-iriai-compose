@@ -125,11 +125,12 @@ async def test_session_key_persistent(runner, feature):
 
 
 async def test_session_key_non_persistent(runner, feature):
+    """All agents now get a session_key, regardless of persistent flag."""
     role = Role(name="pm", prompt="PM")
     actor = AgentActor(name="pm", role=role, persistent=False)
     await runner.resolve(actor, "test", feature=feature)
     agent_rt: MockAgentRuntime = runner.agent_runtime
-    assert agent_rt.calls[-1]["session_key"] is None
+    assert agent_rt.calls[-1]["session_key"] == "pm:f1"
 
 
 # --- Workspace passed to runtime ---
@@ -193,10 +194,11 @@ async def test_resolve_unknown_actor(runner, feature):
 
 async def test_parallel_success(runner, feature):
     role = Role(name="pm", prompt="PM")
-    actor = AgentActor(name="pm", role=role)
+    actor_a = AgentActor(name="pm-a", role=role)
+    actor_b = AgentActor(name="pm-b", role=role)
     tasks = [
-        Ask(actor=actor, prompt="task1"),
-        Ask(actor=actor, prompt="task2"),
+        Ask(actor=actor_a, prompt="task1"),
+        Ask(actor=actor_b, prompt="task2"),
     ]
     results = await runner.parallel(tasks, feature)
     assert len(results) == 2
@@ -217,11 +219,11 @@ async def test_parallel_preserves_order(runner, feature):
         context_provider=runner.context_provider,
     )
     role = Role(name="pm", prompt="PM")
-    actor = AgentActor(name="pm", role=role)
+    actors = [AgentActor(name=f"pm-{i}", role=role) for i in range(3)]
     tasks = [
-        Ask(actor=actor, prompt="a"),
-        Ask(actor=actor, prompt="b"),
-        Ask(actor=actor, prompt="c"),
+        Ask(actor=actors[0], prompt="a"),
+        Ask(actor=actors[1], prompt="b"),
+        Ask(actor=actors[2], prompt="c"),
     ]
     results = await runner_ordered.parallel(tasks, feature)
     assert results == ["first", "second", "third"]
@@ -274,10 +276,11 @@ async def test_parallel_fail_fast(feature, artifacts, workspace):
         workspaces={"main": workspace},
     )
     role = Role(name="pm", prompt="PM")
-    actor = AgentActor(name="pm", role=role)
+    actor_a = AgentActor(name="pm-a", role=role)
+    actor_b = AgentActor(name="pm-b", role=role)
     tasks = [
-        Ask(actor=actor, prompt="fail"),
-        Ask(actor=actor, prompt="ok"),
+        Ask(actor=actor_a, prompt="fail"),
+        Ask(actor=actor_b, prompt="ok"),
     ]
     with pytest.raises(ExceptionGroup):
         await runner.parallel(tasks, feature, fail_fast=True)
@@ -297,13 +300,26 @@ async def test_parallel_no_fail_fast(feature, artifacts, workspace):
         workspaces={"main": workspace},
     )
     role = Role(name="pm", prompt="PM")
-    actor = AgentActor(name="pm", role=role)
+    actor_a = AgentActor(name="pm-a", role=role)
+    actor_b = AgentActor(name="pm-b", role=role)
     tasks = [
-        Ask(actor=actor, prompt="fail"),
-        Ask(actor=actor, prompt="succeed"),
+        Ask(actor=actor_a, prompt="fail"),
+        Ask(actor=actor_b, prompt="succeed"),
     ]
     with pytest.raises(ExceptionGroup):
         await runner.parallel(tasks, feature, fail_fast=False)
+
+
+async def test_parallel_rejects_duplicate_actors(runner, feature):
+    """Same AgentActor in multiple parallel tasks should raise ValueError."""
+    role = Role(name="pm", prompt="PM")
+    actor = AgentActor(name="pm", role=role)
+    tasks = [
+        Ask(actor=actor, prompt="task1"),
+        Ask(actor=actor, prompt="task2"),
+    ]
+    with pytest.raises(ValueError, match="Actor 'pm' used in multiple parallel tasks"):
+        await runner.parallel(tasks, feature)
 
 
 async def test_parallel_empty(runner, feature):
