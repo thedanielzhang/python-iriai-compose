@@ -19,6 +19,16 @@ if TYPE_CHECKING:
     from iriai_compose.tasks import Task
     from iriai_compose.workflow import Feature, Workflow, Workspace
 
+
+def _extract_agent_actors(task: Task) -> list[AgentActor]:
+    """Extract all AgentActor references from a task for collision detection."""
+    actors = []
+    for field in ("actor", "questioner", "responder", "approver", "chooser"):
+        val = getattr(task, field, None)
+        if isinstance(val, AgentActor):
+            actors.append(val)
+    return actors
+
 # Context variable for phase name — safe under concurrent async workflows.
 _current_phase_var: ContextVar[str] = ContextVar("_current_phase", default="")
 
@@ -98,6 +108,17 @@ class WorkflowRunner(ABC):
         fail_fast=False: all tasks run to completion; exceptions are collected
         and raised as an ExceptionGroup.
         """
+        # Enforce: same AgentActor must not run concurrently (session collision)
+        seen_agents: set[str] = set()
+        for task in tasks:
+            for actor in _extract_agent_actors(task):
+                if actor.name in seen_agents:
+                    raise ValueError(
+                        f"Actor '{actor.name}' used in multiple parallel tasks. "
+                        f"Define separate actors for parallel work."
+                    )
+                seen_agents.add(actor.name)
+
         if fail_fast:
             results: list[Any] = [None] * len(tasks)
             async with asyncio.TaskGroup() as tg:
@@ -208,9 +229,7 @@ class DefaultWorkflowRunner(WorkflowRunner):
             )
 
             # Session key derived from actor identity + feature
-            session_key = (
-                f"{actor.name}:{feature.id}" if actor.persistent else None
-            )
+            session_key = f"{actor.name}:{feature.id}"
 
             # Dispatch to agent runtime
             workspace = self.get_workspace(feature.workspace_id)

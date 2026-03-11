@@ -114,12 +114,7 @@ def test_terminal_runtime_import_error():
             T()
 
 
-def test_claude_runtime_import_error():
-    try:
-        import claude_agent_sdk  # noqa: F401
-        pytest.skip("claude-agent-sdk is installed")
-    except ImportError:
-        pass
-    with pytest.raises(ImportError, match="claude-agent-sdk"):
-        from iriai_compose.runtimes.claude import ClaudeAgentRuntime
-        ClaudeAgentRuntime()
+def test_claude_runtime_removed():
+    """ClaudeAgentRuntime has been moved to iriai-build-v2."""
+    import importlib
+    assert importlib.util.find_spec("iriai_compose.runtimes.claude") is None
