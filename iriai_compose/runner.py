@@ -55,6 +55,7 @@ class WorkflowRunner(ABC):
     artifacts: ArtifactStore
     sessions: SessionStore | None
     context_provider: ContextProvider
+    services: dict[str, Any]
 
     async def run(self, task: Task, feature: Feature, *, phase_name: str = "") -> Any:
         """Execute a task. The task defines the interaction pattern."""
@@ -159,6 +160,7 @@ class DefaultWorkflowRunner(WorkflowRunner):
         sessions: SessionStore | None = None,
         context_provider: ContextProvider,
         workspaces: dict[str, Workspace] | None = None,
+        services: dict[str, Any] | None = None,
     ) -> None:
         self.agent_runtime = agent_runtime
         self.interaction_runtimes = interaction_runtimes
@@ -166,6 +168,7 @@ class DefaultWorkflowRunner(WorkflowRunner):
         self.sessions = sessions
         self.context_provider = context_provider
         self._workspaces = workspaces or {}
+        self.services = services or {}
 
     def _resolve_interaction_runtime(self, resolver: str) -> InteractionRuntime:
         """Route a resolver key to an InteractionRuntime.

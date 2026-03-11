@@ -18,7 +18,7 @@ from iriai_compose.storage import (
     InMemorySessionStore,
     SessionStore,
 )
-from iriai_compose.tasks import Ask, Choose, Gate, Interview, Respond, Task
+from iriai_compose.tasks import Ask, Choose, Gate, Interview, Respond, Task, to_str
 from iriai_compose.workflow import Feature, Phase, Workflow, Workspace
 
 __all__ = [
@@ -34,6 +34,7 @@ __all__ = [
     "Gate",
     "Choose",
     "Respond",
+    "to_str",
     # workflow
     "Phase",
     "Workflow",

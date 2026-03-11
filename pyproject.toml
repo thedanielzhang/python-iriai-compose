@@ -9,6 +9,7 @@ description = "Runtime-agnostic, actor-neutral workflow orchestration for multi-
 requires-python = ">=3.11"
 dependencies = [
     "pydantic>=2.0,<3.0",
+    "questionary>=2.0,<3.0",
 ]
 
 [project.optional-dependencies]

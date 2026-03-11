@@ -12,7 +12,7 @@ if TYPE_CHECKING:
     from iriai_compose.workflow import Feature
 
 
-def _to_str(value: Any) -> str:
+def to_str(value: Any) -> str:
     """Convert a value to a prompt-friendly string.
 
     Pydantic models are serialized as JSON; everything else uses str().
@@ -65,17 +65,21 @@ class Interview(Task):
             self.initial_prompt,
             feature=feature,
             context_keys=self.context_keys,
+            output_type=self.output_type,
         )
+
+        if self.done(response):
+            return response
 
         while True:
             answer = await runner.resolve(
                 self.responder,
-                _to_str(response),
+                to_str(response),
                 feature=feature,
             )
             result = await runner.resolve(
                 self.questioner,
-                f"Response: {_to_str(answer)}",
+                f"Response: {to_str(answer)}",
                 feature=feature,
                 output_type=self.output_type,
             )
