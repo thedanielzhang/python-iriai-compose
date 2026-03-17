@@ -29,6 +29,19 @@ class Task(BaseModel, ABC):
 
     context_keys: list[str] = Field(default_factory=list)
 
+    async def on_start(self, runner: WorkflowRunner, feature: Feature) -> None:
+        """Called before execute. Override for setup."""
+
+    async def on_done(
+        self,
+        runner: WorkflowRunner,
+        feature: Feature,
+        *,
+        result: Any = None,
+        error: BaseException | None = None,
+    ) -> None:
+        """Called after execute. Override for teardown. error is set on failure."""
+
     @abstractmethod
     async def execute(self, runner: WorkflowRunner, feature: Feature) -> Any: ...
 

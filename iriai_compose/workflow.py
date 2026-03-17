@@ -35,6 +35,16 @@ class Phase(ABC):
 
     name: str
 
+    async def on_start(
+        self, runner: WorkflowRunner, feature: Feature, state: BaseModel
+    ) -> None:
+        """Called before execute. Override for setup, logging, validation."""
+
+    async def on_done(
+        self, runner: WorkflowRunner, feature: Feature, state: BaseModel
+    ) -> None:
+        """Called after execute with the resulting state. Override for teardown."""
+
     @abstractmethod
     async def execute(
         self, runner: WorkflowRunner, feature: Feature, state: BaseModel
@@ -45,6 +55,16 @@ class Workflow(ABC):
     """A reusable template. Sequence of Phase types."""
 
     name: str
+
+    async def on_start(
+        self, runner: WorkflowRunner, feature: Feature, state: BaseModel
+    ) -> None:
+        """Called before first phase. Override for workflow-level setup."""
+
+    async def on_done(
+        self, runner: WorkflowRunner, feature: Feature, state: BaseModel
+    ) -> None:
+        """Called after last phase with final state. Override for teardown."""
 
     @abstractmethod
     def build_phases(self) -> list[type[Phase]]: ...

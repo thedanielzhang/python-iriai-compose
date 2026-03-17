@@ -71,16 +71,23 @@ class WorkflowRunner(ABC):
         """Execute a task. The task defines the interaction pattern."""
         if phase_name:
             _current_phase_var.set(phase_name)
+        await task.on_start(self, feature)
         try:
-            return await task.execute(self, feature)
-        except IriaiError:
+            result = await task.execute(self, feature)
+        except IriaiError as e:
+            await task.on_done(self, feature, error=e)
             raise
         except Exception as e:
-            raise TaskExecutionError(
+            wrapped = TaskExecutionError(
                 task=task,
                 feature=feature,
                 phase_name=_current_phase_var.get(),
-            ) from e
+            )
+            await task.on_done(self, feature, error=wrapped)
+            raise wrapped from e
+        else:
+            await task.on_done(self, feature, result=result)
+            return result
 
     @abstractmethod
     async def resolve(
@@ -123,14 +130,14 @@ class WorkflowRunner(ABC):
             results: list[Any] = [None] * len(tasks)
             async with asyncio.TaskGroup() as tg:
                 async def _run(idx: int, task: Task) -> None:
-                    results[idx] = await task.execute(self, feature)
+                    results[idx] = await self.run(task, feature)
 
                 for i, task in enumerate(tasks):
                     tg.create_task(_run(i, task))
             return results
         else:
             gathered = await asyncio.gather(
-                *[task.execute(self, feature) for task in tasks],
+                *[self.run(task, feature) for task in tasks],
                 return_exceptions=True,
             )
             exceptions = [r for r in gathered if isinstance(r, BaseException)]
@@ -158,10 +165,22 @@ class WorkflowRunner(ABC):
         state: BaseModel,
     ) -> BaseModel:
         """Execute a workflow's phases in sequence."""
-        for phase_cls in workflow.build_phases():
-            phase = phase_cls()
-            _current_phase_var.set(phase.name)
-            state = await phase.execute(self, feature, state)
+        await workflow.on_start(self, feature, state)
+        try:
+            for phase_cls in workflow.build_phases():
+                phase = phase_cls()
+                _current_phase_var.set(phase.name)
+                await phase.on_start(self, feature, state)
+                try:
+                    state = await phase.execute(self, feature, state)
+                except Exception:
+                    await phase.on_done(self, feature, state)
+                    raise
+                await phase.on_done(self, feature, state)
+        except Exception:
+            await workflow.on_done(self, feature, state)
+            raise
+        await workflow.on_done(self, feature, state)
         return state
 
     def get_workspace(self, workspace_id: str | None) -> Workspace | None:

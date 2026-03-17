@@ -26,6 +26,7 @@ def test_all_matches_expected():
         "ArtifactStore", "SessionStore", "AgentSession", "ContextProvider",
         "InMemoryArtifactStore", "InMemorySessionStore", "DefaultContextProvider",
         "IriaiError", "ResolutionError", "TaskExecutionError",
+        "to_str",
     }
     assert set(iriai_compose.__all__) == expected
 

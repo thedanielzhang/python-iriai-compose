@@ -606,9 +606,9 @@ async def test_interview_immediate_done(feature, artifacts, workspace):
         feature,
     )
     assert result == "DONE"
-    # Responder should be called once (initial response goes to responder,
-    # then questioner returns DONE on first loop iteration)
-    assert len(mock_interaction.calls) == 1
+    # done() returns True on the first questioner response, so the
+    # responder is never reached.
+    assert len(mock_interaction.calls) == 0
 
 
 async def test_interview_pydantic_model_serialization(feature, artifacts, workspace):
