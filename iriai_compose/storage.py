@@ -19,6 +19,9 @@ class ArtifactStore(ABC):
     @abstractmethod
     async def put(self, key: str, value: Any, *, feature: Feature) -> None: ...
 
+    @abstractmethod
+    async def delete(self, key: str, *, feature: Feature) -> None: ...
+
 
 class AgentSession(BaseModel):
     """Persists agent session data for continuity across invocations."""
@@ -56,6 +59,9 @@ class InMemoryArtifactStore(ArtifactStore):
 
     async def put(self, key: str, value: Any, *, feature: Feature) -> None:
         self._store.setdefault(feature.id, {})[key] = value
+
+    async def delete(self, key: str, *, feature: Feature) -> None:
+        self._store.get(feature.id, {}).pop(key, None)
 
 
 class InMemorySessionStore(SessionStore):
