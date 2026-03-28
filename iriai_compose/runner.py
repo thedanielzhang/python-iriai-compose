@@ -100,6 +100,7 @@ class WorkflowRunner(ABC):
         output_type: type[BaseModel] | None = None,
         kind: Literal["approve", "choose", "respond"] | None = None,
         options: list[str] | None = None,
+        continuation: bool = False,
     ) -> Any: ...
 
     async def parallel(
@@ -232,20 +233,26 @@ class DefaultWorkflowRunner(WorkflowRunner):
         output_type: type[BaseModel] | None = None,
         kind: Literal["approve", "choose", "respond"] | None = None,
         options: list[str] | None = None,
+        continuation: bool = False,
     ) -> Any:
         if isinstance(actor, AgentActor):
-            # Merge context: actor baseline + task-specific, deduplicated
-            all_keys = list(
-                dict.fromkeys(actor.context_keys + (context_keys or []))
-            )
-            context_str = ""
-            if all_keys:
-                context_str = await self.context_provider.resolve(
-                    all_keys, feature=feature
+            # On continuation turns the session already has context from
+            # the initial turn — skip re-injection so the prompt stays
+            # focused on the user's response.
+            if continuation:
+                full_prompt = prompt
+            else:
+                all_keys = list(
+                    dict.fromkeys(actor.context_keys + (context_keys or []))
                 )
-            full_prompt = (
-                f"{context_str}\n\n## Task\n{prompt}" if context_str else prompt
-            )
+                context_str = ""
+                if all_keys:
+                    context_str = await self.context_provider.resolve(
+                        all_keys, feature=feature
+                    )
+                full_prompt = (
+                    f"{context_str}\n\n## Task\n{prompt}" if context_str else prompt
+                )
 
             # Session key derived from actor identity + feature
             session_key = f"{actor.name}:{feature.id}"

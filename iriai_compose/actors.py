@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -12,6 +12,7 @@ class Role(BaseModel):
     prompt: str
     tools: list[str] = Field(default_factory=list)
     model: str | None = None
+    effort: Literal["low", "medium", "high", "max"] | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 

@@ -92,9 +92,11 @@ class Interview(Task):
             )
             result = await runner.resolve(
                 self.questioner,
-                f"Response: {to_str(answer)}",
+                f"The user responded:\n\n{to_str(answer)}",
                 feature=feature,
+                context_keys=self.context_keys,
                 output_type=self.output_type,
+                continuation=True,
             )
             if self.done(result):
                 return result
