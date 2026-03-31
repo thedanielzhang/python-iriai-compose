@@ -71,20 +71,19 @@ def _ask_respond(prompt: str) -> str:
 class TerminalInteractionRuntime(InteractionRuntime):
     """Interactive terminal-based interaction runtime.
 
-    Uses deferred import — the module is importable, but instantiation
-    raises a clear error if questionary is not installed.
+    Uses fully-deferred imports — the class can be instantiated without
+    questionary installed.  The dependency is imported lazily inside the
+    ``_ask_*`` helpers, so an ``ImportError`` surfaces only when
+    ``resolve()`` is actually invoked without the package present.
     """
 
     name = "terminal"
 
     def __init__(self) -> None:
-        try:
-            import questionary  # noqa: F401
-        except ImportError:
-            raise ImportError(
-                "TerminalInteractionRuntime requires the 'questionary' package. "
-                "Install it with: pip install iriai-compose[terminal]"
-            )
+        # No eager import check — questionary is imported lazily inside the
+        # _ask_* helpers so the class can be instantiated (and tested with
+        # mocked callables) without the optional dependency installed.
+        pass
 
     async def resolve(self, pending: Pending) -> str | bool:
         if pending.kind == "approve":
