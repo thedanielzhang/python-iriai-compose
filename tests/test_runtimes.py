@@ -107,7 +107,7 @@ async def test_terminal_respond(respond_pending):
 
 # --- Deferred import errors ---
 
-def test_terminal_runtime_import_error():
+async def test_terminal_runtime_import_error():
     """Instantiation succeeds without questionary; ImportError surfaces lazily
     when resolve() delegates to a helper that imports it."""
     from iriai_compose.runtimes.terminal import TerminalInteractionRuntime as T
@@ -124,8 +124,7 @@ def test_terminal_runtime_import_error():
     with patch.dict("sys.modules", {"questionary": None}):
         with pytest.raises(ImportError, match="questionary"):
             # _ask_approve does `import questionary` which now fails
-            import asyncio
-            asyncio.get_event_loop().run_until_complete(rt.resolve(pending))
+            await rt.resolve(pending)
 
 
 def test_claude_runtime_removed():
