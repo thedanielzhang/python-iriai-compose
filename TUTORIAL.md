@@ -368,31 +368,7 @@ ValidationPhase
 
 Phases write artifacts to stores. Agents declare what they need via `context_keys`. The runner resolves keys from stores and injects the content into the agent's prompt. No manual data threading.
 
-### How Context Resolution Works
-
-When the runner resolves an Ask, it collects `context_keys` from the actor and the task (deduped, in order), then calls `context_provider.resolve(keys, feature=feature)`.
-
-`DefaultContextProvider` resolves each key in three steps:
-
-1. **Static files** — if the key matches a registered static file, read it from disk
-2. **Namespaced lookup** — if the key is `"{store}.{key}"` and the prefix matches a registered store name, look up the suffix in that specific store
-3. **Fallback scan** — try every store in insertion order; first non-None value wins
-
-Each resolved value is formatted as a markdown section (`## {key}\n\n{content}`) and all sections are joined into a single string passed to the runtime as the `context` kwarg.
-
-**Key formats:**
-
-```python
-# Plain key — scans all stores in order, first match wins
-architect = AgentActor(name="arch", role=role, context_keys=["project", "prd"])
-
-# Namespaced key — targets a specific store directly
-architect = AgentActor(name="arch", role=role, context_keys=["artifacts.project", "artifacts.prd"])
-```
-
-Plain keys are convenient when you have a single store. Namespaced keys are explicit when you have multiple stores — they avoid ambiguity about which store a key resolves from.
-
-If a namespaced key's prefix doesn't match any store name (e.g., `"my.dotted.key"` with no `"my"` store), it falls back to scanning all stores with the full string as the key.
+Keys can be **plain** (`"prd"`) to scan all stores, or **namespaced** (`"artifacts.prd"`) to target a specific store directly.
 
 ## Structured Outputs
 
