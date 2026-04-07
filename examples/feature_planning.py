@@ -19,11 +19,10 @@ from pydantic import BaseModel
 from iriai_compose import (
     AgentActor,
     Ask,
-    DefaultContextProvider,
     DefaultWorkflowRunner,
     Feature,
     Gate,
-    InMemoryArtifactStore,
+    InMemoryStore,
     InteractionActor,
     Interview,
     Phase,
@@ -91,7 +90,7 @@ class DiscoveryPhase(Phase):
 
     async def execute(self, runner, feature, state):
         # Seed project context
-        await runner.artifacts.put(
+        await runner.stores["artifacts"].put(
             "project",
             "Project: iriai-sdk — workflow orchestration library for AI agents.",
             feature=feature,
@@ -108,7 +107,7 @@ class DiscoveryPhase(Phase):
             feature,
         )
         state.prd = str(result)
-        await runner.artifacts.put("prd", state.prd, feature=feature)
+        await runner.stores["artifacts"].put("prd", state.prd, feature=feature)
         print(f"\n--- PRD ---\n{state.prd}\n")
         return state
 
@@ -128,7 +127,7 @@ class DesignPhase(Phase):
                 feature,
             )
             state.design = str(design)
-            await runner.artifacts.put("design", state.design, feature=feature)
+            await runner.stores["artifacts"].put("design", state.design, feature=feature)
             print(f"\n--- Design (attempt {attempt + 1}) ---\n{state.design}\n")
 
             approved = await runner.run(
@@ -195,17 +194,17 @@ class FeaturePlanningWorkflow(Workflow):
 async def main():
     auto = "--auto" in sys.argv
 
-    artifacts = InMemoryArtifactStore()
-    context_provider = DefaultContextProvider(artifacts=artifacts)
+    store = InMemoryStore()
     workspace = Workspace(id="main", path=Path.cwd(), branch="main")
 
     interaction_runtime = AutoApproveRuntime() if auto else TerminalInteractionRuntime()
 
     runner = DefaultWorkflowRunner(
-        agent_runtime=EchoAgentRuntime(),
-        interaction_runtimes={"terminal": interaction_runtime},
-        artifacts=artifacts,
-        context_provider=context_provider,
+        runtimes={
+            "agent": EchoAgentRuntime(),
+            "terminal": interaction_runtime,
+        },
+        stores={"artifacts": store},
         workspaces={"main": workspace},
     )
 

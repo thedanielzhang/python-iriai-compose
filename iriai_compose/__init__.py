@@ -18,7 +18,9 @@ from iriai_compose.storage import (
     DefaultContextProvider,
     InMemoryArtifactStore,
     InMemorySessionStore,
+    InMemoryStore,
     SessionStore,
+    Store,
 )
 from iriai_compose.tasks import Ask, Choose, Gate, Interview, Respond, Task, to_str
 from iriai_compose.workflow import Feature, Phase, Workflow, Workspace
@@ -54,6 +56,8 @@ __all__ = [
     # pending (deprecated)
     "Pending",
     # storage
+    "Store",
+    "InMemoryStore",
     "ArtifactStore",
     "SessionStore",
     "AgentSession",

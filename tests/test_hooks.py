@@ -11,10 +11,9 @@ from pydantic import BaseModel
 from iriai_compose import (
     AgentActor,
     Ask,
-    DefaultContextProvider,
     DefaultWorkflowRunner,
     Feature,
-    InMemoryArtifactStore,
+    InMemoryStore,
     Phase,
     Role,
     Task,
@@ -34,11 +33,9 @@ _actor = AgentActor(name="bot", role=_role)
 
 
 def _make_runner(response: str = "ok") -> DefaultWorkflowRunner:
-    artifacts = InMemoryArtifactStore()
     return DefaultWorkflowRunner(
         runtimes={"agent": MockAgentRuntime(response=response)},
-        artifacts=artifacts,
-        context_provider=DefaultContextProvider(artifacts=artifacts),
+        stores={"artifacts": InMemoryStore()},
     )
 
 

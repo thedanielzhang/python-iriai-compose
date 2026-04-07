@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import warnings
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -10,8 +11,18 @@ if TYPE_CHECKING:
     from iriai_compose.workflow import Feature
 
 
-class ArtifactStore(ABC):
-    """Persists workflow outputs and reusable documents."""
+# ---------------------------------------------------------------------------
+# Store (generic persistence contract)
+# ---------------------------------------------------------------------------
+
+
+class Store(ABC):
+    """Generic key-value persistence, scoped by feature.
+
+    Compose defines this contract.  Applications provide backends
+    (in-memory, Postgres, filesystem, etc.).  The runner holds named
+    stores via ``stores: dict[str, Store]``.
+    """
 
     @abstractmethod
     async def get(self, key: str, *, feature: Feature) -> Any | None: ...
@@ -23,8 +34,23 @@ class ArtifactStore(ABC):
     async def delete(self, key: str, *, feature: Feature) -> None: ...
 
 
+class ArtifactStore(Store):
+    """.. deprecated:: Use :class:`Store` instead."""
+
+    pass
+
+
+# ---------------------------------------------------------------------------
+# Session persistence (deprecated — runtime concern)
+# ---------------------------------------------------------------------------
+
+
 class AgentSession(BaseModel):
-    """Persists agent session data for continuity across invocations."""
+    """Persists agent session data for continuity across invocations.
+
+    .. deprecated:: Session persistence is a runtime concern.
+       Pass session stores to your runtime directly.
+    """
 
     session_key: str
     session_id: str | None = None
@@ -32,13 +58,22 @@ class AgentSession(BaseModel):
 
 
 class SessionStore(ABC):
-    """Persists agent session data for continuity across invocations."""
+    """Persists agent session data for continuity across invocations.
+
+    .. deprecated:: Session persistence is a runtime concern.
+       Pass session stores to your runtime directly.
+    """
 
     @abstractmethod
     async def load(self, session_key: str) -> AgentSession | None: ...
 
     @abstractmethod
     async def save(self, session: AgentSession) -> None: ...
+
+
+# ---------------------------------------------------------------------------
+# ContextProvider (orchestration — the runner uses this)
+# ---------------------------------------------------------------------------
 
 
 class ContextProvider(ABC):
@@ -48,8 +83,13 @@ class ContextProvider(ABC):
     async def resolve(self, keys: list[str], *, feature: Feature) -> str: ...
 
 
-class InMemoryArtifactStore(ArtifactStore):
-    """In-memory artifact store for development and testing."""
+# ---------------------------------------------------------------------------
+# In-memory implementations
+# ---------------------------------------------------------------------------
+
+
+class InMemoryStore(Store):
+    """In-memory store for development and testing."""
 
     def __init__(self) -> None:
         self._store: dict[str, dict[str, Any]] = {}
@@ -64,8 +104,15 @@ class InMemoryArtifactStore(ArtifactStore):
         self._store.get(feature.id, {}).pop(key, None)
 
 
+InMemoryArtifactStore = InMemoryStore
+""".. deprecated:: Use :class:`InMemoryStore` instead."""
+
+
 class InMemorySessionStore(SessionStore):
-    """In-memory session store for development and testing."""
+    """In-memory session store for development and testing.
+
+    .. deprecated:: Session persistence is a runtime concern.
+    """
 
     def __init__(self) -> None:
         self._sessions: dict[str, AgentSession] = {}
@@ -77,24 +124,49 @@ class InMemorySessionStore(SessionStore):
         self._sessions[session.session_key] = session
 
 
+# ---------------------------------------------------------------------------
+# Default ContextProvider
+# ---------------------------------------------------------------------------
+
+
 class DefaultContextProvider(ContextProvider):
-    """Context provider backed by an ArtifactStore and optional static files."""
+    """Context provider backed by named stores and optional static files.
+
+    Resolves each context key by checking static files first, then
+    searching all registered stores in insertion order.  First non-None
+    value wins.
+    """
 
     def __init__(
         self,
-        artifacts: ArtifactStore,
+        stores: dict[str, Store] | None = None,
         static_files: dict[str, Path] | None = None,
+        # Deprecated
+        artifacts: Store | None = None,
     ) -> None:
-        self.artifacts = artifacts
+        if artifacts is not None:
+            warnings.warn(
+                "DefaultContextProvider(artifacts=) is deprecated; "
+                "use stores= instead.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            stores = stores or {}
+            stores.setdefault("artifacts", artifacts)
+        self.stores = stores or {}
         self.static_files = static_files or {}
 
     async def resolve(self, keys: list[str], *, feature: Feature) -> str:
         sections = []
         for key in keys:
+            content = None
             if key in self.static_files:
                 content = self.static_files[key].read_text()
             else:
-                content = await self.artifacts.get(key, feature=feature)
+                for store in self.stores.values():
+                    content = await store.get(key, feature=feature)
+                    if content is not None:
+                        break
             if content:
                 sections.append(f"## {key}\n\n{content}")
         return "\n\n---\n\n".join(sections)

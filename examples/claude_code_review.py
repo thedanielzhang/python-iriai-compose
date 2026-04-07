@@ -21,12 +21,11 @@ from iriai_compose import (
     AgentActor,
     Ask,
     Choose,
-    DefaultContextProvider,
     DefaultWorkflowRunner,
     Feature,
     Gate,
-    InMemoryArtifactStore,
     InMemorySessionStore,
+    InMemoryStore,
     InteractionActor,
     Phase,
     Respond,
@@ -132,7 +131,7 @@ class ReviewPhase(Phase):
             feature,
         )
         state.review = str(review)
-        await runner.artifacts.put("review", state.review, feature=feature)
+        await runner.stores["artifacts"].put("review", state.review, feature=feature)
         print(f"\n{'='*60}")  # visual separator after streamed review
         return state
 
@@ -215,17 +214,16 @@ class ClaudeCodeReviewWorkflow(Workflow):
 async def main():
     repo_root = Path(__file__).resolve().parent.parent
 
-    artifacts = InMemoryArtifactStore()
+    store = InMemoryStore()
     sessions = InMemorySessionStore()
-    context_provider = DefaultContextProvider(artifacts=artifacts)
     workspace = Workspace(id="main", path=repo_root, branch="main")
 
     runner = DefaultWorkflowRunner(
-        agent_runtime=ClaudeAgentRuntime(session_store=sessions, on_message=print_stream),
-        interaction_runtimes={"terminal": TerminalInteractionRuntime()},
-        artifacts=artifacts,
-        sessions=sessions,
-        context_provider=context_provider,
+        runtimes={
+            "agent": ClaudeAgentRuntime(session_store=sessions, on_message=print_stream),
+            "terminal": TerminalInteractionRuntime(),
+        },
+        stores={"artifacts": store},
         workspaces={"main": workspace},
     )
 

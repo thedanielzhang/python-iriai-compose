@@ -19,11 +19,10 @@ from iriai_compose import (
     AgentActor,
     Ask,
     Choose,
-    DefaultContextProvider,
     DefaultWorkflowRunner,
     Feature,
     Gate,
-    InMemoryArtifactStore,
+    InMemoryStore,
     InteractionActor,
     Phase,
     Respond,
@@ -75,7 +74,7 @@ class SubmissionPhase(Phase):
             feature,
         )
         state.description = description
-        await runner.artifacts.put("submission", description, feature=feature)
+        await runner.stores["artifacts"].put("submission", description, feature=feature)
 
         # Agent reviews it
         review = await runner.run(
@@ -86,7 +85,7 @@ class SubmissionPhase(Phase):
             feature,
         )
         state.review = review
-        await runner.artifacts.put("review", review, feature=feature)
+        await runner.stores["artifacts"].put("review", review, feature=feature)
         print(f"\n--- Review ---\n{review}\n")
 
         # Human approves the review
@@ -161,17 +160,17 @@ class CodeReviewWorkflow(Workflow):
 async def main():
     auto = "--auto" in sys.argv
 
-    artifacts = InMemoryArtifactStore()
-    context_provider = DefaultContextProvider(artifacts=artifacts)
+    store = InMemoryStore()
     workspace = Workspace(id="main", path=Path.cwd(), branch="main")
 
     interaction_runtime = AutoApproveRuntime() if auto else TerminalInteractionRuntime()
 
     runner = DefaultWorkflowRunner(
-        agent_runtime=EchoAgentRuntime(),
-        interaction_runtimes={"terminal": interaction_runtime},
-        artifacts=artifacts,
-        context_provider=context_provider,
+        runtimes={
+            "agent": EchoAgentRuntime(),
+            "terminal": interaction_runtime,
+        },
+        stores={"artifacts": store},
         workspaces={"main": workspace},
     )
 

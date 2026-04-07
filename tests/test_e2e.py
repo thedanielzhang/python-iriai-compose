@@ -8,11 +8,10 @@ from pydantic import BaseModel
 from iriai_compose import (
     AgentActor,
     Ask,
-    DefaultContextProvider,
     DefaultWorkflowRunner,
     Feature,
     Gate,
-    InMemoryArtifactStore,
+    InMemoryStore,
     InteractionActor,
     Phase,
     Role,
@@ -39,7 +38,7 @@ class AnalysisPhase(Phase):
             Ask(actor=analyst, prompt=f"Analyze: {state.description}"),
             feature,
         )
-        await runner.artifacts.put("analysis", str(result), feature=feature)
+        await runner.stores["artifacts"].put("analysis", str(result), feature=feature)
         state.result = str(result)
         return state
 
@@ -65,7 +64,7 @@ class E2EPipeline(Workflow):
 
 
 async def test_e2e_workflow():
-    artifacts = InMemoryArtifactStore()
+    store = InMemoryStore()
     workspace = Workspace(id="main", path=Path("/tmp/e2e"), branch="main")
 
     runner = DefaultWorkflowRunner(
@@ -73,8 +72,7 @@ async def test_e2e_workflow():
             "agent": MockAgentRuntime(response="analysis complete"),
             "auto": AutoApproveRuntime(),
         },
-        artifacts=artifacts,
-        context_provider=DefaultContextProvider(artifacts=artifacts),
+        stores={"artifacts": store},
         workspaces={"main": workspace},
     )
 
@@ -94,13 +92,13 @@ async def test_e2e_workflow():
     assert result.reviewed is True
 
     # Verify artifacts stored
-    stored = await artifacts.get("analysis", feature=feature)
+    stored = await store.get("analysis", feature=feature)
     assert stored == "analysis complete"
 
 
 async def test_e2e_context_resolution():
     """Verify that context is resolved and included in prompts."""
-    artifacts = InMemoryArtifactStore()
+    store = InMemoryStore()
 
     feature = Feature(
         id="ctx-test",
@@ -110,14 +108,13 @@ async def test_e2e_context_resolution():
         workspace_id="main",
     )
 
-    # Pre-populate artifact
-    await artifacts.put("project", "My project description", feature=feature)
+    # Pre-populate store
+    await store.put("project", "My project description", feature=feature)
 
     agent_rt = MockAgentRuntime(response="done")
     runner = DefaultWorkflowRunner(
         runtimes={"agent": agent_rt},
-        artifacts=artifacts,
-        context_provider=DefaultContextProvider(artifacts=artifacts),
+        stores={"artifacts": store},
     )
 
     role = Role(name="pm", prompt="PM")

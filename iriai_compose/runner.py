@@ -11,7 +11,7 @@ from pydantic import BaseModel
 from iriai_compose.actors import AgentActor, InteractionActor
 from iriai_compose.exceptions import IriaiError, ResolutionError, TaskExecutionError
 from iriai_compose.runtime import Runtime
-from iriai_compose.storage import ArtifactStore, ContextProvider, SessionStore
+from iriai_compose.storage import ContextProvider, DefaultContextProvider, Store
 
 if TYPE_CHECKING:
     from iriai_compose.actors import Actor, Role
@@ -106,8 +106,7 @@ class WorkflowRunner(ABC):
     """The coordinator. Phases call ``runner.run(task)``.  Leaf tasks call
     ``runner.resolve(task, feature)``."""
 
-    artifacts: ArtifactStore
-    sessions: SessionStore | None
+    stores: dict[str, Store]
     context_provider: ContextProvider
     services: dict[str, Any]
 
@@ -250,12 +249,13 @@ class DefaultWorkflowRunner(WorkflowRunner):
         self,
         *,
         runtimes: dict[str, Runtime] | None = None,
-        artifacts: ArtifactStore,
-        sessions: SessionStore | None = None,
-        context_provider: ContextProvider,
+        stores: dict[str, Store] | None = None,
+        context_provider: ContextProvider | None = None,
         workspaces: dict[str, Workspace] | None = None,
         services: dict[str, Any] | None = None,
         # --- Deprecated params (backwards compat) ---
+        artifacts: Store | None = None,
+        sessions: Any = None,
         agent_runtime: AgentRuntime | None = None,
         interaction_runtimes: dict[str, InteractionRuntime] | None = None,
     ) -> None:
@@ -272,12 +272,50 @@ class DefaultWorkflowRunner(WorkflowRunner):
             if interaction_runtimes:
                 runtimes.update(interaction_runtimes)
 
+        # Handle deprecated artifacts → stores
+        if artifacts is not None:
+            warnings.warn(
+                "artifacts= is deprecated. "
+                "Use stores={'artifacts': store} instead.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            if stores is None:
+                stores = {}
+            stores.setdefault("artifacts", artifacts)
+
+        # Handle deprecated sessions
+        if sessions is not None:
+            warnings.warn(
+                "sessions= is deprecated. "
+                "Pass session store to your runtime directly.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+
         self._runtimes = runtimes or {}
-        self.artifacts = artifacts
-        self.sessions = sessions
-        self.context_provider = context_provider
+        self.stores = stores or {}
+        self.context_provider = context_provider or DefaultContextProvider(
+            stores=self.stores,
+        )
         self._workspaces = workspaces or {}
         self.services = services or {}
+        self.sessions = sessions  # deprecated, kept for backward compat
+
+    @property
+    def artifacts(self) -> Store:
+        """.. deprecated:: Use ``runner.stores['artifacts']`` instead."""
+        warnings.warn(
+            "runner.artifacts is deprecated. "
+            "Use runner.stores['artifacts'] instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        if "artifacts" not in self.stores:
+            raise AttributeError(
+                "No 'artifacts' store registered. Use runner.stores instead."
+            )
+        return self.stores["artifacts"]
 
     def _resolve_runtime(self, resolver: str) -> Runtime:
         """Route a resolver key to a Runtime.
