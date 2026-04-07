@@ -14,6 +14,8 @@ iriai-compose provides a structured way to orchestrate workflows involving multi
 - **Composite Tasks** — `Gate`, `Choose`, `Respond`, `Interview` — higher-level interaction patterns built from Asks
 - **Actors** — Either AI agents (`AgentActor`) or humans (`InteractionActor`), each with a `resolver` that routes to a runtime
 - **Runtimes** — Pluggable backends that implement a single `ask()` method. `AgentRuntime` for LLMs, `InteractionRuntime` for human UIs
+- **Stores** — Named, pluggable persistence backends that implement `get()`/`put()`/`delete()`. The runner holds multiple named stores via `stores: dict[str, Store]`
+- **ContextProvider** — Resolves `context_keys` on actors and tasks into prompt-ready strings by searching across registered stores
 - **Phases** — Orchestration units that group tasks with control flow
 - **Workflows** — Reusable templates composed of sequential phases
 - **Features** — Concrete execution instances binding identity to a workflow and workspace
@@ -38,9 +40,9 @@ from pathlib import Path
 from pydantic import BaseModel
 
 from iriai_compose import (
-    AgentActor, AgentRuntime, Ask, DefaultContextProvider,
-    DefaultWorkflowRunner, Feature, Gate, InMemoryArtifactStore,
-    InteractionActor, Phase, Role, Workflow, Workspace,
+    AgentActor, AgentRuntime, Ask, DefaultWorkflowRunner,
+    Feature, Gate, InMemoryStore, InteractionActor, Phase,
+    Role, Workflow, Workspace,
 )
 from iriai_compose.runtimes import TerminalInteractionRuntime
 
@@ -50,8 +52,6 @@ class MyAgentRuntime(AgentRuntime):
     name = "my-agent"
 
     async def ask(self, task, **kwargs):
-        # task.prompt, task.input, task.to_prompt() are all available
-        # kwargs includes context, workspace, session_key
         prompt = task.to_prompt()
         context = kwargs.get("context", "")
         if context:
@@ -97,14 +97,12 @@ class ReviewWorkflow(Workflow):
 
 # --- Run it ---
 async def main():
-    artifacts = InMemoryArtifactStore()
     runner = DefaultWorkflowRunner(
         runtimes={
             "my-agent": MyAgentRuntime(),
             "terminal": TerminalInteractionRuntime(),
         },
-        artifacts=artifacts,
-        context_provider=DefaultContextProvider(artifacts=artifacts),
+        stores={"artifacts": InMemoryStore()},
     )
     feature = Feature(
         id="f-1", name="Review", slug="review",
@@ -126,6 +124,11 @@ Workflow (template)
       Ask (atomic — the only task that reaches the runtime)
         Actor (AgentActor or InteractionActor)
           Runtime (AgentRuntime or InteractionRuntime)
+
+Runner
+  stores: dict[str, Store]         — named persistence backends
+  context_provider: ContextProvider — resolves context_keys → prompt text
+  services: dict[str, Any]         — application-level services
 ```
 
 The execution flow:
@@ -173,11 +176,55 @@ Ask separates instruction from data:
 | `TerminalInteractionRuntime` | Interaction | Interactive terminal prompts via questionary |
 | `AutoApproveRuntime` | Interaction | Auto-approves all interactions (useful for testing) |
 
-### Storage
+### Stores
 
-- **ArtifactStore** — Key-value store for intermediate results shared between phases
-- **SessionStore** — Persists agent sessions for resumption across turns
-- **ContextProvider** — Resolves context keys into prompt-ready strings
+Stores are named, pluggable persistence backends. Compose defines the `Store` ABC — applications provide implementations (in-memory, Postgres, filesystem, etc.).
+
+The runner holds multiple named stores:
+
+```python
+runner = DefaultWorkflowRunner(
+    stores={
+        "artifacts": PostgresStore(...),
+        "events": EventStore(...),
+    },
+    ...
+)
+```
+
+Phases read and write through named stores:
+
+```python
+await runner.stores["artifacts"].put("prd", prd_text, feature=feature)
+existing = await runner.stores["artifacts"].get("design", feature=feature)
+```
+
+All store operations are scoped by `feature` — no cross-feature data leakage.
+
+| Store | Description |
+|-------|-------------|
+| `InMemoryStore` | Dict-backed store for development and testing |
+
+### Context Resolution
+
+Agents receive background information via `context_keys` — declared on actors and tasks:
+
+```python
+architect = AgentActor(
+    name="architect",
+    role=architect_role,
+    context_keys=["project", "prd"],  # always injected
+)
+
+# Task-level keys are merged with actor-level keys:
+await runner.run(
+    Ask(actor=architect, prompt="Design the system", context_keys=["design"]),
+    feature,
+)
+# → architect sees: project + prd + design
+```
+
+The runner resolves context_keys via `ContextProvider`, which searches all registered stores. `DefaultContextProvider` is auto-constructed from the runner's stores when not provided explicitly.
 
 ## Writing Custom Runtimes
 
@@ -192,13 +239,11 @@ class ClaudeRuntime(AgentRuntime):
     name = "claude"
 
     async def ask(self, task, **kwargs):
-        # Build prompt from task fields
         prompt = task.to_prompt()
         context = kwargs.get("context", "")
         if context:
             prompt = f"{context}\n\n## Task\n{prompt}"
 
-        # Use task metadata
         role = task.actor.role
         output_type = task.output_type
 
@@ -219,7 +264,6 @@ class SlackRuntime(InteractionRuntime):
     name = "slack"
 
     async def ask(self, task, **kwargs):
-        # Inspect task fields to decide presentation
         if isinstance(task.input, Select):
             return await self.post_buttons(task.prompt, task.input.options)
         elif isinstance(task.input, Confirm):
@@ -229,6 +273,50 @@ class SlackRuntime(InteractionRuntime):
 ```
 
 The runtime decides its own UX. The framework passes the Ask with all its fields — `prompt`, `input`, `input_type`, `output_type`, `to_prompt()` — and the runtime uses whichever fields it needs.
+
+## Writing Custom Stores
+
+Every store implements three methods: `get()`, `put()`, `delete()` — all scoped by feature.
+
+```python
+from iriai_compose import Store
+
+class PostgresStore(Store):
+    def __init__(self, pool):
+        self.pool = pool
+
+    async def get(self, key, *, feature):
+        row = await self.pool.fetchrow(
+            "SELECT value FROM artifacts WHERE feature_id=$1 AND key=$2 "
+            "ORDER BY id DESC LIMIT 1",
+            feature.id, key,
+        )
+        return json.loads(row["value"]) if row else None
+
+    async def put(self, key, value, *, feature):
+        await self.pool.execute(
+            "INSERT INTO artifacts (feature_id, key, value) VALUES ($1, $2, $3)",
+            feature.id, key, json.dumps(value),
+        )
+
+    async def delete(self, key, *, feature):
+        await self.pool.execute(
+            "DELETE FROM artifacts WHERE feature_id=$1 AND key=$2",
+            feature.id, key,
+        )
+```
+
+Register stores by name on the runner. Use multiple stores for different concerns:
+
+```python
+runner = DefaultWorkflowRunner(
+    runtimes={...},
+    stores={
+        "artifacts": PostgresStore(pool),
+        "events": EventStore(pool),
+    },
+)
+```
 
 ## Writing Custom Tasks
 
@@ -272,13 +360,10 @@ Custom tasks work with any runtime — they only create Asks, and the runner rou
 **Chain outputs to inputs.** The `output_type` of one Ask can flow directly into the `input` of the next:
 
 ```python
-# Agent produces structured output
 scholarships = await runner.run(
     Ask(actor=agent, prompt="Find scholarships", output_type=ScholarshipList),
     feature,
 )
-
-# That output becomes the input to the next Ask
 choice = await runner.run(
     Ask(actor=human, prompt="Pick one to apply for",
         input=scholarships, input_type=ScholarshipList),
@@ -291,7 +376,7 @@ choice = await runner.run(
 ```python
 class ScholarshipAsk(Ask):
     def to_prompt(self):
-        criteria = self.input  # SearchCriteria
+        criteria = self.input
         return (
             f"{self.prompt}\n\n"
             f"Minimum grant: ${criteria.min_amount}\n"
@@ -301,7 +386,7 @@ class ScholarshipAsk(Ask):
 
 **Use lifecycle hooks for cross-cutting concerns.** `on_start` and `on_done` on Tasks, Phases, and Workflows are the right place for logging, metrics, and validation — not inside `execute()`.
 
-**Use artifacts for cross-phase data.** Within a phase, pass data directly through state or task outputs. Across phases, use `runner.artifacts.put()` and `context_keys` for automatic injection.
+**Use stores for cross-phase data.** Within a phase, pass data directly through state or task outputs. Across phases, use `runner.stores["artifacts"].put()` and `context_keys` for automatic injection into agent prompts.
 
 ## Example Use Cases
 
@@ -314,17 +399,14 @@ class ReviewPhase(Phase):
     name = "review"
 
     async def execute(self, runner, feature, state):
-        # Human submits code description
         description = await runner.run(
             Respond(responder=human, prompt="Describe the code to review:"),
             feature,
         )
-        # Agent reviews it
         review = await runner.run(
             Ask(actor=reviewer, prompt=f"Review:\n\n{description}"),
             feature,
         )
-        # Human approves or requests changes
         approved = await runner.run(
             Gate(approver=human, prompt="Accept this review?"),
             feature,
@@ -354,14 +436,13 @@ class DiscoveryPhase(Phase):
             feature,
         )
         state.prd = str(result)
-        await runner.artifacts.put("prd", state.prd, feature=feature)
+        await runner.stores["artifacts"].put("prd", state.prd, feature=feature)
         return state
 
 class ValidationPhase(Phase):
     name = "validation"
 
     async def execute(self, runner, feature, state):
-        # Two validators run in parallel
         results = await runner.parallel(
             [
                 Ask(actor=security_validator, prompt=f"Security review:\n\n{state.design}"),
@@ -377,40 +458,6 @@ class ValidationPhase(Phase):
 ```
 
 **Value:** the same workflow supports Claude + terminal during development, Claude + Slack in production, or GPT + a custom web UI — zero workflow changes.
-
-### Scholarship Discovery
-
-Agent discovers options, human selects, agent executes:
-
-```python
-class DiscoverAndSelectPhase(Phase):
-    name = "discover"
-
-    async def execute(self, runner, feature, state):
-        # Agent discovers scholarships (structured output)
-        candidates = await runner.run(
-            Ask(actor=finder, prompt="Find matching scholarships",
-                output_type=ScholarshipList),
-            feature,
-        )
-
-        # Human picks from the discovered options
-        options = [f"{s.name} (${s.amount})" for s in candidates.scholarships]
-        chosen = await runner.run(
-            Choose(chooser=human, prompt="Which to apply for?", options=options),
-            feature,
-        )
-
-        # Human approves the plan
-        approved = await runner.run(
-            Gate(approver=human, prompt="Proceed with application?"),
-            feature,
-        )
-        state.approved = approved is True
-        return state
-```
-
-**Value:** the agent runtime can be swapped between different LLM providers. The interaction runtime can be terminal, Slack, or a web form. The workflow code stays the same.
 
 ## Development
 
