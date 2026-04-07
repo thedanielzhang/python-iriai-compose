@@ -5,8 +5,10 @@ def test_all_public_names_importable():
     expected = [
         "Actor", "AgentActor", "InteractionActor", "Role",
         "Task", "Ask", "Interview", "Gate", "Choose", "Respond",
+        "Select", "Confirm",
         "Phase", "Workflow", "Feature", "Workspace",
-        "WorkflowRunner", "DefaultWorkflowRunner", "AgentRuntime", "InteractionRuntime",
+        "WorkflowRunner", "DefaultWorkflowRunner",
+        "Runtime", "AgentRuntime", "InteractionRuntime",
         "Pending",
         "ArtifactStore", "SessionStore", "AgentSession", "ContextProvider",
         "InMemoryArtifactStore", "InMemorySessionStore", "DefaultContextProvider",
@@ -20,8 +22,10 @@ def test_all_matches_expected():
     expected = {
         "Actor", "AgentActor", "InteractionActor", "Role",
         "Task", "Ask", "Interview", "Gate", "Choose", "Respond",
+        "Select", "Confirm",
         "Phase", "Workflow", "Feature", "Workspace",
-        "WorkflowRunner", "DefaultWorkflowRunner", "AgentRuntime", "InteractionRuntime",
+        "WorkflowRunner", "DefaultWorkflowRunner",
+        "Runtime", "AgentRuntime", "InteractionRuntime",
         "Pending",
         "ArtifactStore", "SessionStore", "AgentSession", "ContextProvider",
         "InMemoryArtifactStore", "InMemorySessionStore", "DefaultContextProvider",

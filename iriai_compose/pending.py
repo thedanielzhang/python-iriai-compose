@@ -7,7 +7,13 @@ from pydantic import BaseModel
 
 
 class Pending(BaseModel):
-    """A suspension point where the workflow is waiting on external input."""
+    """A suspension point where the workflow is waiting on external input.
+
+    .. deprecated::
+        Runtimes now receive tasks directly via ``Runtime.ask()`` instead
+        of Pending objects.  This class is kept for backwards compatibility
+        with downstream consumers.
+    """
 
     id: str
     feature_id: str

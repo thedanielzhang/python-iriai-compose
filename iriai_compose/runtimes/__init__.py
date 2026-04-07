@@ -1,8 +1,13 @@
 from __future__ import annotations
 
-from iriai_compose.pending import Pending
+from typing import TYPE_CHECKING, Any
+
+from iriai_compose.prompts import Confirm, Select
 from iriai_compose.runner import InteractionRuntime
 from iriai_compose.runtimes.terminal import TerminalInteractionRuntime
+
+if TYPE_CHECKING:
+    from iriai_compose.tasks import Ask
 
 
 class AutoApproveRuntime(InteractionRuntime):
@@ -10,11 +15,11 @@ class AutoApproveRuntime(InteractionRuntime):
 
     name = "auto"
 
-    async def resolve(self, pending: Pending) -> str | bool:
-        if pending.kind == "approve":
+    async def ask(self, task: Ask, **kwargs: Any) -> str | bool:
+        if isinstance(task.input, Select):
+            return task.input.options[0] if task.input.options else ""
+        if isinstance(task.input, Confirm):
             return True
-        if pending.kind == "choose":
-            return (pending.options or [""])[0]
         return "auto-approved"
 
 

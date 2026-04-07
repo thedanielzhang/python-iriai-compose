@@ -28,6 +28,7 @@ class AgentActor(Actor):
     role: Role
     context_keys: list[str] = Field(default_factory=list)
     persistent: bool = True
+    resolver: str = "agent"
 
 
 class InteractionActor(Actor):

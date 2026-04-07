@@ -69,8 +69,8 @@ async def test_e2e_workflow():
     workspace = Workspace(id="main", path=Path("/tmp/e2e"), branch="main")
 
     runner = DefaultWorkflowRunner(
-        agent_runtime=MockAgentRuntime(response="analysis complete"),
-        interaction_runtimes={
+        runtimes={
+            "agent": MockAgentRuntime(response="analysis complete"),
             "auto": AutoApproveRuntime(),
         },
         artifacts=artifacts,
@@ -115,8 +115,7 @@ async def test_e2e_context_resolution():
 
     agent_rt = MockAgentRuntime(response="done")
     runner = DefaultWorkflowRunner(
-        agent_runtime=agent_rt,
-        interaction_runtimes={},
+        runtimes={"agent": agent_rt},
         artifacts=artifacts,
         context_provider=DefaultContextProvider(artifacts=artifacts),
     )

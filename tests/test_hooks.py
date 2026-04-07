@@ -36,8 +36,7 @@ _actor = AgentActor(name="bot", role=_role)
 def _make_runner(response: str = "ok") -> DefaultWorkflowRunner:
     artifacts = InMemoryArtifactStore()
     return DefaultWorkflowRunner(
-        agent_runtime=MockAgentRuntime(response=response),
-        interaction_runtimes={},
+        runtimes={"agent": MockAgentRuntime(response=response)},
         artifacts=artifacts,
         context_provider=DefaultContextProvider(artifacts=artifacts),
     )
@@ -96,7 +95,7 @@ async def test_task_hooks_on_iriai_error():
         async def on_done(self, runner, feature, *, result=None, error=None):
             self.log.append(f"on_done:error:{type(error).__name__}")
 
-        async def execute(self, runner, feature):
+        async def execute(self, runner, feature, **kwargs):
             raise IriaiError("boom")
 
     task = FailTask(log=[])
@@ -118,7 +117,7 @@ async def test_task_hooks_on_unexpected_error():
         async def on_done(self, runner, feature, *, result=None, error=None):
             self.log.append(f"on_done:error:{type(error).__name__}")
 
-        async def execute(self, runner, feature):
+        async def execute(self, runner, feature, **kwargs):
             raise RuntimeError("unexpected")
 
     task = BadTask(log=[])

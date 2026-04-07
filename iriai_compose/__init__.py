@@ -3,12 +3,14 @@
 from iriai_compose.actors import Actor, AgentActor, InteractionActor, Role
 from iriai_compose.exceptions import IriaiError, ResolutionError, TaskExecutionError
 from iriai_compose.pending import Pending
+from iriai_compose.prompts import Confirm, Select
 from iriai_compose.runner import (
     AgentRuntime,
     DefaultWorkflowRunner,
     InteractionRuntime,
     WorkflowRunner,
 )
+from iriai_compose.runtime import Runtime
 from iriai_compose.storage import (
     AgentSession,
     ArtifactStore,
@@ -35,6 +37,9 @@ __all__ = [
     "Choose",
     "Respond",
     "to_str",
+    # prompts (input types)
+    "Select",
+    "Confirm",
     # workflow
     "Phase",
     "Workflow",
@@ -43,9 +48,10 @@ __all__ = [
     # runner
     "WorkflowRunner",
     "DefaultWorkflowRunner",
+    "Runtime",
     "AgentRuntime",
     "InteractionRuntime",
-    # pending
+    # pending (deprecated)
     "Pending",
     # storage
     "ArtifactStore",

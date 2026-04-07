@@ -15,7 +15,8 @@ from iriai_compose import (
     Role,
     Workspace,
 )
-from iriai_compose.pending import Pending
+from iriai_compose.prompts import Select
+from iriai_compose.tasks import Ask
 
 
 class MockAgentRuntime(AgentRuntime):
@@ -32,21 +33,21 @@ class MockAgentRuntime(AgentRuntime):
         self._handler = handler
         self.calls: list[dict[str, Any]] = []
 
-    async def invoke(
-        self,
-        role: Role,
-        prompt: str,
-        *,
-        output_type: type[BaseModel] | None = None,
-        workspace: Workspace | None = None,
-        session_key: str | None = None,
-    ) -> str | BaseModel:
+    async def ask(self, task: Ask, **kwargs: Any) -> str | BaseModel:
+        # Build prompt the same way a real agent runtime would
+        context = kwargs.get("context", "")
+        combined = task.to_prompt()
+        prompt = (
+            f"{context}\n\n## Task\n{combined}" if context else combined
+        )
         call = {
-            "role": role,
             "prompt": prompt,
-            "output_type": output_type,
-            "workspace": workspace,
-            "session_key": session_key,
+            "role": task.actor.role if isinstance(task.actor, AgentActor) else None,
+            "output_type": task.output_type,
+            "workspace": kwargs.get("workspace"),
+            "session_key": kwargs.get("session_key"),
+            "input": task.input,
+            "input_type": task.input_type,
         }
         self.calls.append(call)
         if self._handler:
@@ -55,27 +56,31 @@ class MockAgentRuntime(AgentRuntime):
 
 
 class MockInteractionRuntime(InteractionRuntime):
-    """Returns canned responses per kind."""
+    """Returns canned responses based on input type."""
 
     name = "mock"
 
     def __init__(
         self,
-        approve: bool | str = True,
         choose: str = "",
         respond: str = "mock input",
     ) -> None:
-        self._approve = approve
         self._choose = choose
         self._respond = respond
-        self.calls: list[Pending] = []
+        self.calls: list[dict[str, Any]] = []
 
-    async def resolve(self, pending: Pending) -> str | bool:
-        self.calls.append(pending)
-        if pending.kind == "approve":
-            return self._approve
-        if pending.kind == "choose":
-            return self._choose or (pending.options or [""])[0]
+    async def ask(self, task: Ask, **kwargs: Any) -> str | bool:
+        call = {
+            "prompt": task.prompt,
+            "input": task.input,
+            "input_type": task.input_type,
+            "output_type": task.output_type,
+        }
+        self.calls.append(call)
+        if isinstance(task.input, Select):
+            if self._choose:
+                return self._choose
+            return task.input.options[0] if task.input.options else ""
         return self._respond
 
 

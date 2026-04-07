@@ -1,22 +1,21 @@
 from __future__ import annotations
 
 import asyncio
+import warnings
 from abc import ABC, abstractmethod
 from contextvars import ContextVar
-from datetime import datetime
-from typing import TYPE_CHECKING, Any, Literal
-from uuid import uuid4
+from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel
 
 from iriai_compose.actors import AgentActor, InteractionActor
 from iriai_compose.exceptions import IriaiError, ResolutionError, TaskExecutionError
-from iriai_compose.pending import Pending
+from iriai_compose.runtime import Runtime
 from iriai_compose.storage import ArtifactStore, ContextProvider, SessionStore
 
 if TYPE_CHECKING:
     from iriai_compose.actors import Actor, Role
-    from iriai_compose.tasks import Task
+    from iriai_compose.tasks import Ask, Task
     from iriai_compose.workflow import Feature, Workflow, Workspace
 
 
@@ -33,12 +32,45 @@ def _extract_agent_actors(task: Task) -> list[AgentActor]:
 _current_phase_var: ContextVar[str] = ContextVar("_current_phase", default="")
 
 
-class AgentRuntime(ABC):
-    """Executes agent invocations."""
+# ---------------------------------------------------------------------------
+# Runtime subclasses
+# ---------------------------------------------------------------------------
 
-    name: str
 
-    @abstractmethod
+class AgentRuntime(Runtime):
+    """Runtime for agent (LLM) invocations.
+
+    New implementations should override ``ask()``.  Legacy implementations
+    that override ``invoke()`` continue to work — ``ask()`` bridges to
+    ``invoke()`` with a deprecation warning.
+    """
+
+    async def ask(self, task: Ask, **kwargs: Any) -> Any:
+        # Bridge: if a subclass still overrides the legacy invoke(), delegate.
+        if type(self).invoke is not AgentRuntime.invoke:
+            warnings.warn(
+                "AgentRuntime.invoke() is deprecated. "
+                "Implement ask() instead.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            # Build prompt the way the old framework did
+            context = kwargs.get("context", "")
+            combined = task.to_prompt()
+            prompt = (
+                f"{context}\n\n## Task\n{combined}" if context else combined
+            )
+            return await self.invoke(
+                role=task.actor.role,
+                prompt=prompt,
+                output_type=task.output_type,
+                workspace=kwargs.get("workspace"),
+                session_key=kwargs.get("session_key"),
+            )
+        raise NotImplementedError(
+            f"{type(self).__name__} must implement ask()"
+        )
+
     async def invoke(
         self,
         role: Role,
@@ -47,33 +79,52 @@ class AgentRuntime(ABC):
         output_type: type[BaseModel] | None = None,
         workspace: Workspace | None = None,
         session_key: str | None = None,
-    ) -> str | BaseModel: ...
+    ) -> str | BaseModel:
+        """Deprecated — implement ``ask()`` instead."""
+        raise NotImplementedError(
+            "invoke() is deprecated. Implement ask() instead."
+        )
 
 
-class InteractionRuntime(ABC):
-    """Resolves interaction requests."""
+class InteractionRuntime(Runtime):
+    """Runtime for human interactions.
 
-    name: str
+    Subclasses implement ``ask()`` and decide their own presentation
+    strategy by inspecting the Ask task's fields (``task.prompt``,
+    ``task.input``, ``task.input_type``, ``task.output_type``, etc.).
+    """
 
-    @abstractmethod
-    async def resolve(self, pending: Pending) -> str | bool: ...
+    pass
+
+
+# ---------------------------------------------------------------------------
+# WorkflowRunner
+# ---------------------------------------------------------------------------
 
 
 class WorkflowRunner(ABC):
-    """The coordinator. Phases call runner.run(task). Tasks call runner.resolve(actor)."""
+    """The coordinator. Phases call ``runner.run(task)``.  Leaf tasks call
+    ``runner.resolve(task, feature)``."""
 
     artifacts: ArtifactStore
     sessions: SessionStore | None
     context_provider: ContextProvider
     services: dict[str, Any]
 
-    async def run(self, task: Task, feature: Feature, *, phase_name: str = "") -> Any:
-        """Execute a task. The task defines the interaction pattern."""
+    async def run(
+        self, task: Task, feature: Feature, *, phase_name: str = "", **kwargs: Any
+    ) -> Any:
+        """Execute a task with lifecycle hooks.
+
+        Extra ``**kwargs`` are forwarded to ``task.execute()`` so that
+        runtime-specific hints can flow from phases through composite
+        tasks down to the runtime.
+        """
         if phase_name:
             _current_phase_var.set(phase_name)
         await task.on_start(self, feature)
         try:
-            result = await task.execute(self, feature)
+            result = await task.execute(self, feature, **kwargs)
         except IriaiError as e:
             await task.on_done(self, feature, error=e)
             raise
@@ -90,18 +141,16 @@ class WorkflowRunner(ABC):
             return result
 
     @abstractmethod
-    async def resolve(
-        self,
-        actor: Actor,
-        prompt: str,
-        *,
-        feature: Feature,
-        context_keys: list[str] | None = None,
-        output_type: type[BaseModel] | None = None,
-        kind: Literal["approve", "choose", "respond"] | None = None,
-        options: list[str] | None = None,
-        continuation: bool = False,
-    ) -> Any: ...
+    async def resolve(self, task: Ask, feature: Feature, **kwargs: Any) -> Any:
+        """Dispatch an Ask to the appropriate runtime.
+
+        Only Ask tasks reach this method — composite tasks decompose
+        into Asks via ``runner.run()`` in their ``execute()``.
+
+        Extra ``**kwargs`` from ``runner.run()`` are forwarded through
+        ``Ask.execute()`` and merged into the runtime call.
+        """
+        ...
 
     async def parallel(
         self,
@@ -189,99 +238,100 @@ class WorkflowRunner(ABC):
         return None
 
 
+# ---------------------------------------------------------------------------
+# DefaultWorkflowRunner
+# ---------------------------------------------------------------------------
+
+
 class DefaultWorkflowRunner(WorkflowRunner):
     """Default implementation of WorkflowRunner."""
 
     def __init__(
         self,
         *,
-        agent_runtime: AgentRuntime,
-        interaction_runtimes: dict[str, InteractionRuntime],
+        runtimes: dict[str, Runtime] | None = None,
         artifacts: ArtifactStore,
         sessions: SessionStore | None = None,
         context_provider: ContextProvider,
         workspaces: dict[str, Workspace] | None = None,
         services: dict[str, Any] | None = None,
+        # --- Deprecated params (backwards compat) ---
+        agent_runtime: AgentRuntime | None = None,
+        interaction_runtimes: dict[str, InteractionRuntime] | None = None,
     ) -> None:
-        self.agent_runtime = agent_runtime
-        self.interaction_runtimes = interaction_runtimes
+        if agent_runtime is not None or interaction_runtimes is not None:
+            warnings.warn(
+                "agent_runtime / interaction_runtimes are deprecated. "
+                "Use runtimes={'key': runtime, ...} instead.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            runtimes = runtimes or {}
+            if agent_runtime:
+                runtimes.setdefault("agent", agent_runtime)
+            if interaction_runtimes:
+                runtimes.update(interaction_runtimes)
+
+        self._runtimes = runtimes or {}
         self.artifacts = artifacts
         self.sessions = sessions
         self.context_provider = context_provider
         self._workspaces = workspaces or {}
         self.services = services or {}
 
-    def _resolve_interaction_runtime(self, resolver: str) -> InteractionRuntime:
-        """Route a resolver key to an InteractionRuntime.
-        Tries exact match first, then prefix match."""
-        if resolver in self.interaction_runtimes:
-            return self.interaction_runtimes[resolver]
+    def _resolve_runtime(self, resolver: str) -> Runtime:
+        """Route a resolver key to a Runtime.
+
+        Tries exact match first, then prefix match.
+        """
+        if resolver in self._runtimes:
+            return self._runtimes[resolver]
         prefix = resolver.split(".")[0]
-        if prefix in self.interaction_runtimes:
-            return self.interaction_runtimes[prefix]
+        if prefix in self._runtimes:
+            return self._runtimes[prefix]
         raise ResolutionError(
-            f"No InteractionRuntime registered for resolver '{resolver}'"
+            f"No Runtime registered for resolver '{resolver}'"
         )
 
-    async def resolve(
-        self,
-        actor: Actor,
-        prompt: str,
-        *,
-        feature: Feature,
-        context_keys: list[str] | None = None,
-        output_type: type[BaseModel] | None = None,
-        kind: Literal["approve", "choose", "respond"] | None = None,
-        options: list[str] | None = None,
-        continuation: bool = False,
+    async def resolve(  # noqa: D401
+        self, task: Ask, feature: Feature, **kwargs: Any
     ) -> Any:
-        if isinstance(actor, AgentActor):
-            # On continuation turns the session already has context from
-            # the initial turn — skip re-injection so the prompt stays
-            # focused on the user's response.
-            if continuation:
-                full_prompt = prompt
-            else:
+        """Dispatch an Ask to the appropriate runtime.
+
+        The runner handles context resolution (a framework concern) and
+        passes the Ask through to the runtime.  The runtime decides how
+        to use the Ask's fields (prompt, input, input_type, output_type,
+        to_prompt(), etc.).
+        """
+        actor = task.actor
+        if not isinstance(actor, (AgentActor, InteractionActor)):
+            raise ResolutionError(f"Unknown actor type: {type(actor).__name__}")
+        runtime = self._resolve_runtime(actor.resolver)
+
+        # Context resolution — framework concern
+        context = ""
+        if not task.continuation:
+            all_keys: list[str] = []
+            if isinstance(actor, AgentActor):
                 all_keys = list(
-                    dict.fromkeys(actor.context_keys + (context_keys or []))
+                    dict.fromkeys(actor.context_keys + (task.context_keys or []))
                 )
-                context_str = ""
-                if all_keys:
-                    context_str = await self.context_provider.resolve(
-                        all_keys, feature=feature
-                    )
-                full_prompt = (
-                    f"{context_str}\n\n## Task\n{prompt}" if context_str else prompt
+            elif task.context_keys:
+                all_keys = list(task.context_keys)
+            if all_keys:
+                context = await self.context_provider.resolve(
+                    all_keys, feature=feature
                 )
 
-            # Session key derived from actor identity + feature
-            session_key = f"{actor.name}:{feature.id}"
+        # Build runtime kwargs — framework-level metadata takes precedence
+        # over user-supplied kwargs from runner.run(**kwargs)
+        framework_kwargs: dict[str, Any] = {"context": context}
+        if isinstance(actor, AgentActor):
+            framework_kwargs["workspace"] = self.get_workspace(feature.workspace_id)
+            framework_kwargs["session_key"] = f"{actor.name}:{feature.id}"
 
-            # Dispatch to agent runtime
-            workspace = self.get_workspace(feature.workspace_id)
-            return await self.agent_runtime.invoke(
-                role=actor.role,
-                prompt=full_prompt,
-                output_type=output_type,
-                workspace=workspace,
-                session_key=session_key,
-            )
-
-        elif isinstance(actor, InteractionActor):
-            # Create Pending and dispatch to the correct interaction runtime
-            pending = Pending(
-                id=str(uuid4()),
-                feature_id=feature.id,
-                phase_name=_current_phase_var.get(),
-                kind=kind or "respond",
-                prompt=prompt,
-                options=options,
-                created_at=datetime.now(),
-            )
-            runtime = self._resolve_interaction_runtime(actor.resolver)
-            return await runtime.resolve(pending)
-
-        raise ResolutionError(f"Unknown actor type: {type(actor).__name__}")
+        merged = {**kwargs, **framework_kwargs}
+        return await runtime.ask(task, **merged)
 
     def get_workspace(self, workspace_id: str | None) -> Workspace | None:
         if workspace_id is None:

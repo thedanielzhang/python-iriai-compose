@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, Any, Callable
 from pydantic import BaseModel, ConfigDict, Field
 
 from iriai_compose.actors import Actor
+from iriai_compose.prompts import Select
 
 if TYPE_CHECKING:
     from iriai_compose.runner import WorkflowRunner
@@ -43,24 +44,52 @@ class Task(BaseModel, ABC):
         """Called after execute. Override for teardown. error is set on failure."""
 
     @abstractmethod
-    async def execute(self, runner: WorkflowRunner, feature: Feature) -> Any: ...
+    async def execute(
+        self, runner: WorkflowRunner, feature: Feature, **kwargs: Any
+    ) -> Any: ...
+
+
+# ---------------------------------------------------------------------------
+# Ask — the only leaf task (atomic)
+# ---------------------------------------------------------------------------
 
 
 class Ask(Task):
-    """One-shot: send prompt to one actor, get result."""
+    """One-shot: send prompt to one actor, get result.
+
+    This is the only task type that reaches the runtime directly via
+    ``runner.resolve()``.  All other tasks compose Asks in their
+    ``execute()`` method.
+    """
 
     actor: Actor
     prompt: str
+    input: Any = None
+    input_type: type[BaseModel] | None = None
     output_type: type[BaseModel] | None = None
+    continuation: bool = False
 
-    async def execute(self, runner: WorkflowRunner, feature: Feature) -> Any:
-        return await runner.resolve(
-            self.actor,
-            self.prompt,
-            feature=feature,
-            context_keys=self.context_keys,
-            output_type=self.output_type,
-        )
+    def to_prompt(self) -> str:
+        """Combine prompt + input into the final prompt string.
+
+        Default: appends input as JSON.  Subclasses can override for
+        custom templating (e.g. referencing specific input fields).
+        """
+        if self.input is None:
+            return self.prompt
+        if isinstance(self.input, BaseModel):
+            return f"{self.prompt}\n\n{self.input.model_dump_json(indent=2)}"
+        return f"{self.prompt}\n\n{self.input}"
+
+    async def execute(
+        self, runner: WorkflowRunner, feature: Feature, **kwargs: Any
+    ) -> Any:
+        return await runner.resolve(self, feature, **kwargs)
+
+
+# ---------------------------------------------------------------------------
+# Composite tasks — composed of Asks
+# ---------------------------------------------------------------------------
 
 
 class Interview(Task):
@@ -72,31 +101,36 @@ class Interview(Task):
     output_type: type[BaseModel] | None = None
     done: Callable[[Any], bool]
 
-    async def execute(self, runner: WorkflowRunner, feature: Feature) -> Any:
-        response = await runner.resolve(
-            self.questioner,
-            self.initial_prompt,
-            feature=feature,
-            context_keys=self.context_keys,
-            output_type=self.output_type,
+    async def execute(
+        self, runner: WorkflowRunner, feature: Feature, **kwargs: Any
+    ) -> Any:
+        response = await runner.run(
+            Ask(
+                actor=self.questioner,
+                prompt=self.initial_prompt,
+                context_keys=self.context_keys,
+                output_type=self.output_type,
+            ),
+            feature,
         )
 
         if self.done(response):
             return response
 
         while True:
-            answer = await runner.resolve(
-                self.responder,
-                to_str(response),
-                feature=feature,
+            answer = await runner.run(
+                Ask(actor=self.responder, prompt=to_str(response)),
+                feature,
             )
-            result = await runner.resolve(
-                self.questioner,
-                f"The user responded:\n\n{to_str(answer)}",
-                feature=feature,
-                context_keys=self.context_keys,
-                output_type=self.output_type,
-                continuation=True,
+            result = await runner.run(
+                Ask(
+                    actor=self.questioner,
+                    prompt=f"The user responded:\n\n{to_str(answer)}",
+                    context_keys=self.context_keys,
+                    output_type=self.output_type,
+                    continuation=True,
+                ),
+                feature,
             )
             if self.done(result):
                 return result
@@ -104,47 +138,79 @@ class Interview(Task):
 
 
 class Gate(Task):
-    """Approval: one actor approves, rejects, or gives feedback."""
+    """Approval: one actor approves, rejects, or gives feedback.
+
+    Composes Asks internally — presents a selection, then optionally
+    collects free-form feedback.  Returns ``True`` (approved),
+    ``False`` (rejected), or a feedback string.
+    """
 
     approver: Actor
     prompt: str
 
-    async def execute(self, runner: WorkflowRunner, feature: Feature) -> Any:
-        return await runner.resolve(
-            self.approver,
-            self.prompt,
-            feature=feature,
-            kind="approve",
+    async def execute(
+        self, runner: WorkflowRunner, feature: Feature, **kwargs: Any
+    ) -> Any:
+        choice = await runner.run(
+            Ask(
+                actor=self.approver,
+                prompt=self.prompt,
+                input=Select(options=["Approve", "Reject", "Give feedback"]),
+                input_type=Select,
+                context_keys=self.context_keys,
+            ),
+            feature,
         )
+        if choice == "Give feedback":
+            return await runner.run(
+                Ask(actor=self.approver, prompt="Please provide your feedback:"),
+                feature,
+            )
+        return choice == "Approve"
 
 
 class Choose(Task):
-    """Selection: one actor picks from options."""
+    """Selection: one actor picks from options.
+
+    Composes a single Ask with a ``Select`` input.
+    """
 
     chooser: Actor
     prompt: str
     options: list[str]
 
-    async def execute(self, runner: WorkflowRunner, feature: Feature) -> Any:
-        return await runner.resolve(
-            self.chooser,
-            self.prompt,
-            feature=feature,
-            kind="choose",
-            options=self.options,
+    async def execute(
+        self, runner: WorkflowRunner, feature: Feature, **kwargs: Any
+    ) -> Any:
+        return await runner.run(
+            Ask(
+                actor=self.chooser,
+                prompt=self.prompt,
+                input=Select(options=self.options),
+                input_type=Select,
+                context_keys=self.context_keys,
+            ),
+            feature,
         )
 
 
 class Respond(Task):
-    """Free-form: one actor provides open-ended input."""
+    """Free-form: one actor provides open-ended input.
+
+    Composes a single plain Ask.
+    """
 
     responder: Actor
     prompt: str
 
-    async def execute(self, runner: WorkflowRunner, feature: Feature) -> Any:
-        return await runner.resolve(
-            self.responder,
-            self.prompt,
-            feature=feature,
-            kind="respond",
+    async def execute(
+        self, runner: WorkflowRunner, feature: Feature, **kwargs: Any
+    ) -> Any:
+        return await runner.run(
+            Ask(
+                actor=self.responder,
+                prompt=self.prompt,
+                context_keys=self.context_keys,
+            ),
+            feature,
         )

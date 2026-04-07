@@ -1,13 +1,16 @@
 import asyncio
+import warnings
 
 import pytest
 from pydantic import BaseModel
 
 from iriai_compose import (
     AgentActor,
+    AgentRuntime,
     DefaultWorkflowRunner,
     Feature,
     InteractionActor,
+    InteractionRuntime,
     InMemoryArtifactStore,
     DefaultContextProvider,
     ResolutionError,
@@ -17,7 +20,8 @@ from iriai_compose import (
     Phase,
     Workflow,
 )
-from iriai_compose.tasks import Ask, Gate, Interview, Respond, Task
+from iriai_compose.prompts import Select
+from iriai_compose.tasks import Ask, Gate, Interview, Respond, Choose, Task
 from tests.conftest import MockAgentRuntime, MockInteractionRuntime
 
 
@@ -43,10 +47,10 @@ def artifacts():
 @pytest.fixture
 def runner(artifacts, workspace):
     return DefaultWorkflowRunner(
-        agent_runtime=MockAgentRuntime(response="agent response"),
-        interaction_runtimes={
+        runtimes={
+            "agent": MockAgentRuntime(response="agent response"),
             "human": MockInteractionRuntime(),
-            "auto": MockInteractionRuntime(approve=True, respond="auto"),
+            "auto": MockInteractionRuntime(respond="auto"),
         },
         artifacts=artifacts,
         context_provider=DefaultContextProvider(artifacts=artifacts),
@@ -54,22 +58,42 @@ def runner(artifacts, workspace):
     )
 
 
-# --- Interaction runtime routing ---
+# --- Deprecated constructor ---
 
 
-def test_resolve_interaction_runtime_exact(runner):
-    rt = runner._resolve_interaction_runtime("human")
+def test_deprecated_constructor(artifacts, workspace):
+    with warnings.catch_warnings(record=True) as w:
+        warnings.simplefilter("always")
+        runner = DefaultWorkflowRunner(
+            agent_runtime=MockAgentRuntime(response="ok"),
+            interaction_runtimes={"human": MockInteractionRuntime()},
+            artifacts=artifacts,
+            context_provider=DefaultContextProvider(artifacts=artifacts),
+        )
+        assert len(w) == 1
+        assert issubclass(w[0].category, DeprecationWarning)
+        assert "deprecated" in str(w[0].message).lower()
+    # Runtime should still be accessible
+    assert runner._runtimes["agent"] is not None
+    assert runner._runtimes["human"] is not None
+
+
+# --- Runtime routing ---
+
+
+def test_resolve_runtime_exact(runner):
+    rt = runner._resolve_runtime("human")
     assert rt is not None
 
 
-def test_resolve_interaction_runtime_prefix(runner):
-    rt = runner._resolve_interaction_runtime("human.slack")
-    assert rt is runner.interaction_runtimes["human"]
+def test_resolve_runtime_prefix(runner):
+    rt = runner._resolve_runtime("human.slack")
+    assert rt is runner._runtimes["human"]
 
 
-def test_resolve_interaction_runtime_miss(runner):
+def test_resolve_runtime_miss(runner):
     with pytest.raises(ResolutionError):
-        runner._resolve_interaction_runtime("unknown.runtime")
+        runner._resolve_runtime("unknown.runtime")
 
 
 # --- Context merging ---
@@ -84,7 +108,7 @@ async def test_context_merging(runner, feature, artifacts):
     task = Ask(actor=actor, prompt="Do something", context_keys=["extra"])
 
     await runner.run(task, feature)
-    agent_rt: MockAgentRuntime = runner.agent_runtime
+    agent_rt: MockAgentRuntime = runner._runtimes["agent"]
     prompt = agent_rt.calls[-1]["prompt"]
     assert "Project info" in prompt
     assert "Extra info" in prompt
@@ -98,7 +122,7 @@ async def test_context_dedup(runner, feature, artifacts):
     task = Ask(actor=actor, prompt="Do something", context_keys=["project"])
 
     await runner.run(task, feature)
-    agent_rt: MockAgentRuntime = runner.agent_runtime
+    agent_rt: MockAgentRuntime = runner._runtimes["agent"]
     prompt = agent_rt.calls[-1]["prompt"]
     # "project" should appear once in context, not twice
     assert prompt.count("## project") == 1
@@ -109,27 +133,18 @@ async def test_no_context_keys_no_prefix(runner, feature):
     role = Role(name="pm", prompt="PM")
     actor = AgentActor(name="pm", role=role, context_keys=[])
     await runner.run(Ask(actor=actor, prompt="raw prompt"), feature)
-    agent_rt: MockAgentRuntime = runner.agent_runtime
+    agent_rt: MockAgentRuntime = runner._runtimes["agent"]
     assert agent_rt.calls[-1]["prompt"] == "raw prompt"
 
 
 # --- Session key derivation ---
 
 
-async def test_session_key_persistent(runner, feature):
+async def test_session_key(runner, feature):
     role = Role(name="pm", prompt="PM")
-    actor = AgentActor(name="pm", role=role, persistent=True)
-    await runner.resolve(actor, "test", feature=feature)
-    agent_rt: MockAgentRuntime = runner.agent_runtime
-    assert agent_rt.calls[-1]["session_key"] == "pm:f1"
-
-
-async def test_session_key_non_persistent(runner, feature):
-    """All agents now get a session_key, regardless of persistent flag."""
-    role = Role(name="pm", prompt="PM")
-    actor = AgentActor(name="pm", role=role, persistent=False)
-    await runner.resolve(actor, "test", feature=feature)
-    agent_rt: MockAgentRuntime = runner.agent_runtime
+    actor = AgentActor(name="pm", role=role)
+    await runner.run(Ask(actor=actor, prompt="test"), feature)
+    agent_rt: MockAgentRuntime = runner._runtimes["agent"]
     assert agent_rt.calls[-1]["session_key"] == "pm:f1"
 
 
@@ -139,8 +154,8 @@ async def test_session_key_non_persistent(runner, feature):
 async def test_workspace_passed_to_agent_runtime(runner, feature, workspace):
     role = Role(name="pm", prompt="PM")
     actor = AgentActor(name="pm", role=role)
-    await runner.resolve(actor, "test", feature=feature)
-    agent_rt: MockAgentRuntime = runner.agent_runtime
+    await runner.run(Ask(actor=actor, prompt="test"), feature)
+    agent_rt: MockAgentRuntime = runner._runtimes["agent"]
     assert agent_rt.calls[-1]["workspace"] is workspace
 
 
@@ -149,7 +164,7 @@ async def test_workspace_passed_to_agent_runtime(runner, feature, workspace):
 
 async def test_non_iriai_error_wrapped(runner, feature):
     class FailingTask(Task):
-        async def execute(self, runner, feature):
+        async def execute(self, runner, feature, **kwargs):
             raise ValueError("boom")
 
     with pytest.raises(TaskExecutionError) as exc_info:
@@ -159,7 +174,7 @@ async def test_non_iriai_error_wrapped(runner, feature):
 
 async def test_iriai_error_passthrough(runner, feature):
     class FailingTask(Task):
-        async def execute(self, runner, feature):
+        async def execute(self, runner, feature, **kwargs):
             raise ResolutionError("no runtime")
 
     with pytest.raises(ResolutionError):
@@ -167,10 +182,8 @@ async def test_iriai_error_passthrough(runner, feature):
 
 
 async def test_error_wrapping_preserves_phase_name(runner, feature):
-    """TaskExecutionError should capture the current phase name."""
-
     class FailingTask(Task):
-        async def execute(self, runner, feature):
+        async def execute(self, runner, feature, **kwargs):
             raise ValueError("boom")
 
     with pytest.raises(TaskExecutionError) as exc_info:
@@ -184,9 +197,9 @@ async def test_error_wrapping_preserves_phase_name(runner, feature):
 async def test_resolve_unknown_actor(runner, feature):
     from iriai_compose import Actor
 
-    actor = Actor(name="plain")
+    ask = Ask(actor=Actor(name="plain"), prompt="test")
     with pytest.raises(ResolutionError):
-        await runner.resolve(actor, "test", feature=feature)
+        await runner.resolve(ask, feature)
 
 
 # --- Parallel ---
@@ -206,15 +219,13 @@ async def test_parallel_success(runner, feature):
 
 
 async def test_parallel_preserves_order(runner, feature):
-    """Results should match task submission order."""
     responses = iter(["first", "second", "third"])
 
     def handler(call):
         return next(responses)
 
     runner_ordered = DefaultWorkflowRunner(
-        agent_runtime=MockAgentRuntime(handler=handler),
-        interaction_runtimes={},
+        runtimes={"agent": MockAgentRuntime(handler=handler)},
         artifacts=runner.artifacts,
         context_provider=runner.context_provider,
     )
@@ -230,26 +241,24 @@ async def test_parallel_preserves_order(runner, feature):
 
 
 async def test_parallel_fail_fast_cancels(feature, artifacts, workspace):
-    """fail_fast=True should cancel remaining tasks via TaskGroup."""
     started = []
     finished = []
 
     class SlowTask(Task):
         label: str = ""
 
-        async def execute(self, runner, feature):
+        async def execute(self, runner, feature, **kwargs):
             started.append(self.label)
             await asyncio.sleep(10)
             finished.append(self.label)
             return "done"
 
     class FailTask(Task):
-        async def execute(self, runner, feature):
+        async def execute(self, runner, feature, **kwargs):
             raise ValueError("boom")
 
     runner = DefaultWorkflowRunner(
-        agent_runtime=MockAgentRuntime(),
-        interaction_runtimes={},
+        runtimes={"agent": MockAgentRuntime()},
         artifacts=artifacts,
         context_provider=DefaultContextProvider(artifacts=artifacts),
         workspaces={"main": workspace},
@@ -258,7 +267,6 @@ async def test_parallel_fail_fast_cancels(feature, artifacts, workspace):
         await runner.parallel(
             [FailTask(), SlowTask(label="slow")], feature, fail_fast=True
         )
-    # SlowTask should have been cancelled — it should NOT have finished
     assert "slow" not in finished
 
 
@@ -269,8 +277,7 @@ async def test_parallel_fail_fast(feature, artifacts, workspace):
         return "ok"
 
     runner = DefaultWorkflowRunner(
-        agent_runtime=MockAgentRuntime(handler=handler),
-        interaction_runtimes={},
+        runtimes={"agent": MockAgentRuntime(handler=handler)},
         artifacts=artifacts,
         context_provider=DefaultContextProvider(artifacts=artifacts),
         workspaces={"main": workspace},
@@ -293,8 +300,7 @@ async def test_parallel_no_fail_fast(feature, artifacts, workspace):
         return "ok"
 
     runner = DefaultWorkflowRunner(
-        agent_runtime=MockAgentRuntime(handler=handler),
-        interaction_runtimes={},
+        runtimes={"agent": MockAgentRuntime(handler=handler)},
         artifacts=artifacts,
         context_provider=DefaultContextProvider(artifacts=artifacts),
         workspaces={"main": workspace},
@@ -311,7 +317,6 @@ async def test_parallel_no_fail_fast(feature, artifacts, workspace):
 
 
 async def test_parallel_rejects_duplicate_actors(runner, feature):
-    """Same AgentActor in multiple parallel tasks should raise ValueError."""
     role = Role(name="pm", prompt="PM")
     actor = AgentActor(name="pm", role=role)
     tasks = [
@@ -323,7 +328,6 @@ async def test_parallel_rejects_duplicate_actors(runner, feature):
 
 
 async def test_parallel_empty(runner, feature):
-    """Parallel with no tasks should return empty list."""
     results = await runner.parallel([], feature)
     assert results == []
 
@@ -376,7 +380,6 @@ async def test_execute_workflow(runner, feature):
 
 
 async def test_execute_workflow_sets_phase(runner, feature):
-    """Phase name should be visible to tasks run within each phase."""
     from iriai_compose.runner import _current_phase_var
 
     phase_names = []
@@ -409,8 +412,6 @@ async def test_execute_workflow_sets_phase(runner, feature):
 
 
 async def test_execute_workflow_empty_phases(runner, feature):
-    """Workflow with no phases should return state unchanged."""
-
     class State(BaseModel):
         value: int = 42
 
@@ -474,7 +475,6 @@ async def test_execute_child_rebinds_workspace(runner, feature):
 
 
 async def test_execute_child_does_not_mutate_original_feature(runner, feature):
-    """Rebinding workspace should not mutate the original feature."""
     original_ws = feature.workspace_id
 
     class State(BaseModel):
@@ -518,7 +518,68 @@ async def test_gate_approve_flow(runner, feature):
     result = await runner.run(
         Gate(approver=human, prompt="Approve?"), feature
     )
+    # MockInteractionRuntime returns first option ("Approve") for Select input
     assert result is True
+
+
+async def test_gate_reject_flow(feature, artifacts, workspace):
+    runner = DefaultWorkflowRunner(
+        runtimes={
+            "agent": MockAgentRuntime(),
+            "human": MockInteractionRuntime(choose="Reject"),
+        },
+        artifacts=artifacts,
+        context_provider=DefaultContextProvider(artifacts=artifacts),
+        workspaces={"main": workspace},
+    )
+    human = InteractionActor(name="user", resolver="human")
+    result = await runner.run(
+        Gate(approver=human, prompt="Approve?"), feature
+    )
+    assert result is False
+
+
+async def test_gate_feedback_flow(feature, artifacts, workspace):
+    """Gate returns feedback string when 'Give feedback' is chosen."""
+    call_count = 0
+
+    class FeedbackRuntime(InteractionRuntime):
+        name = "mock"
+
+        async def ask(self, task, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return "Give feedback"
+            return "needs more tests"
+
+    runner = DefaultWorkflowRunner(
+        runtimes={
+            "agent": MockAgentRuntime(),
+            "human": FeedbackRuntime(),
+        },
+        artifacts=artifacts,
+        context_provider=DefaultContextProvider(artifacts=artifacts),
+        workspaces={"main": workspace},
+    )
+    human = InteractionActor(name="user", resolver="human")
+    result = await runner.run(
+        Gate(approver=human, prompt="Approve?"), feature
+    )
+    assert result == "needs more tests"
+
+
+# --- Choose flow ---
+
+
+async def test_choose_flow(runner, feature):
+    human = InteractionActor(name="user", resolver="human")
+    result = await runner.run(
+        Choose(chooser=human, prompt="Pick one", options=["A", "B", "C"]),
+        feature,
+    )
+    # MockInteractionRuntime returns first option for Select
+    assert result == "A"
 
 
 # --- Respond flow ---
@@ -526,13 +587,41 @@ async def test_gate_approve_flow(runner, feature):
 
 async def test_respond_flow(runner, feature):
     human = InteractionActor(name="user", resolver="human")
-    mock_rt: MockInteractionRuntime = runner.interaction_runtimes["human"]
+    mock_rt: MockInteractionRuntime = runner._runtimes["human"]
     mock_rt._respond = "user input"
     result = await runner.run(
         Respond(responder=human, prompt="Tell me more"), feature
     )
     assert result == "user input"
-    assert mock_rt.calls[-1].kind == "respond"
+
+
+# --- Ask with input + to_prompt ---
+
+
+async def test_ask_to_prompt_with_input(runner, feature):
+    role = Role(name="pm", prompt="PM")
+    actor = AgentActor(name="pm", role=role)
+    result = await runner.run(
+        Ask(
+            actor=actor,
+            prompt="Rank these",
+            input=Select(options=["A", "B"]),
+            input_type=Select,
+        ),
+        feature,
+    )
+    agent_rt: MockAgentRuntime = runner._runtimes["agent"]
+    prompt = agent_rt.calls[-1]["prompt"]
+    assert "Rank these" in prompt
+    assert '"options"' in prompt  # input appended as JSON
+
+
+async def test_ask_to_prompt_no_input(runner, feature):
+    role = Role(name="pm", prompt="PM")
+    actor = AgentActor(name="pm", role=role)
+    await runner.run(Ask(actor=actor, prompt="plain prompt"), feature)
+    agent_rt: MockAgentRuntime = runner._runtimes["agent"]
+    assert agent_rt.calls[-1]["prompt"] == "plain prompt"
 
 
 # --- Interview flow ---
@@ -549,8 +638,8 @@ async def test_interview_flow(feature, artifacts, workspace):
         return "question"
 
     runner = DefaultWorkflowRunner(
-        agent_runtime=MockAgentRuntime(handler=handler),
-        interaction_runtimes={
+        runtimes={
+            "agent": MockAgentRuntime(handler=handler),
             "human": MockInteractionRuntime(respond="my answer"),
         },
         artifacts=artifacts,
@@ -575,18 +664,15 @@ async def test_interview_flow(feature, artifacts, workspace):
 
 
 async def test_interview_immediate_done(feature, artifacts, workspace):
-    """Interview where done() is True on the very first questioner response."""
-    call_count = 0
-
     def handler(call):
-        nonlocal call_count
-        call_count += 1
         return "DONE"
 
     mock_interaction = MockInteractionRuntime(respond="answer")
     runner = DefaultWorkflowRunner(
-        agent_runtime=MockAgentRuntime(handler=handler),
-        interaction_runtimes={"human": mock_interaction},
+        runtimes={
+            "agent": MockAgentRuntime(handler=handler),
+            "human": mock_interaction,
+        },
         artifacts=artifacts,
         context_provider=DefaultContextProvider(artifacts=artifacts),
         workspaces={"main": workspace},
@@ -606,14 +692,10 @@ async def test_interview_immediate_done(feature, artifacts, workspace):
         feature,
     )
     assert result == "DONE"
-    # done() returns True on the first questioner response, so the
-    # responder is never reached.
     assert len(mock_interaction.calls) == 0
 
 
 async def test_interview_pydantic_model_serialization(feature, artifacts, workspace):
-    """Interview should serialize Pydantic models as JSON, not repr."""
-
     class Result(BaseModel):
         status: str
         questions: list[str] = []
@@ -629,8 +711,10 @@ async def test_interview_pydantic_model_serialization(feature, artifacts, worksp
 
     mock_interaction = MockInteractionRuntime(respond="my answer")
     runner = DefaultWorkflowRunner(
-        agent_runtime=MockAgentRuntime(handler=handler),
-        interaction_runtimes={"human": mock_interaction},
+        runtimes={
+            "agent": MockAgentRuntime(handler=handler),
+            "human": mock_interaction,
+        },
         artifacts=artifacts,
         context_provider=DefaultContextProvider(artifacts=artifacts),
     )
@@ -651,13 +735,12 @@ async def test_interview_pydantic_model_serialization(feature, artifacts, worksp
     assert isinstance(result, Result)
     assert result.status == "done"
     # The responder should have received JSON, not Python repr
-    responder_prompt = mock_interaction.calls[0].prompt
+    responder_prompt = mock_interaction.calls[0]["prompt"]
     assert '"status"' in responder_prompt
     assert "Result(" not in responder_prompt
 
 
 async def test_interview_agent_to_agent(feature, artifacts, workspace):
-    """Interview with two AgentActors — both should have their context resolved."""
     call_count = 0
 
     def handler(call):
@@ -666,8 +749,7 @@ async def test_interview_agent_to_agent(feature, artifacts, workspace):
         return "DONE"
 
     runner = DefaultWorkflowRunner(
-        agent_runtime=MockAgentRuntime(handler=handler),
-        interaction_runtimes={},
+        runtimes={"agent": MockAgentRuntime(handler=handler)},
         artifacts=artifacts,
         context_provider=DefaultContextProvider(artifacts=artifacts),
     )
@@ -689,14 +771,60 @@ async def test_interview_agent_to_agent(feature, artifacts, workspace):
     assert result == "DONE"
 
 
-# --- Pending phase name ---
+# --- Continuation skips context ---
 
 
-async def test_pending_gets_current_phase_name(runner, feature):
-    """Pending created during interaction resolution should carry phase name."""
-    human = InteractionActor(name="user", resolver="human")
-    mock_rt: MockInteractionRuntime = runner.interaction_runtimes["human"]
+async def test_continuation_skips_context(runner, feature, artifacts):
+    """Ask with continuation=True should skip context injection."""
+    await artifacts.put("project", "Project info", feature=feature)
+
+    role = Role(name="pm", prompt="PM")
+    actor = AgentActor(name="pm", role=role, context_keys=["project"])
+
+    # First call — context injected
+    await runner.run(Ask(actor=actor, prompt="initial"), feature)
+    agent_rt: MockAgentRuntime = runner._runtimes["agent"]
+    assert "Project info" in agent_rt.calls[-1]["prompt"]
+
+    # Continuation — context skipped
     await runner.run(
-        Gate(approver=human, prompt="Approve?"), feature, phase_name="review"
+        Ask(actor=actor, prompt="follow-up", continuation=True), feature
     )
-    assert mock_rt.calls[-1].phase_name == "review"
+    assert "Project info" not in agent_rt.calls[-1]["prompt"]
+    assert "follow-up" in agent_rt.calls[-1]["prompt"]
+
+
+# --- kwargs flow through to runtime ---
+
+
+async def test_kwargs_flow_to_runtime(feature, artifacts, workspace):
+    """Extra kwargs from runner.run() should reach the runtime."""
+    received_kwargs = {}
+
+    class KwargsCapture(AgentRuntime):
+        name = "capture"
+
+        async def ask(self, task, **kwargs):
+            received_kwargs.update(kwargs)
+            return "ok"
+
+    runner = DefaultWorkflowRunner(
+        runtimes={"agent": KwargsCapture()},
+        artifacts=artifacts,
+        context_provider=DefaultContextProvider(artifacts=artifacts),
+        workspaces={"main": workspace},
+    )
+    role = Role(name="pm", prompt="PM")
+    actor = AgentActor(name="pm", role=role)
+
+    await runner.run(
+        Ask(actor=actor, prompt="test"),
+        feature,
+        custom_hint="hello",
+    )
+    # Framework kwargs always present
+    assert "context" in received_kwargs
+    assert "workspace" in received_kwargs
+    assert "session_key" in received_kwargs
+    # User kwargs forwarded
+    assert received_kwargs["custom_hint"] == "hello"
