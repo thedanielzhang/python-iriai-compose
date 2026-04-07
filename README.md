@@ -224,7 +224,24 @@ await runner.run(
 # → architect sees: project + prd + design
 ```
 
-The runner resolves context_keys via `ContextProvider`, which searches all registered stores. `DefaultContextProvider` is auto-constructed from the runner's stores when not provided explicitly.
+The runner resolves context_keys via `ContextProvider`. `DefaultContextProvider` is auto-constructed from the runner's stores when not provided explicitly.
+
+**Key formats:**
+
+| Format | Behavior |
+|--------|----------|
+| `"prd"` | Scans all stores in insertion order. First non-None wins. |
+| `"artifacts.prd"` | Looks up `"prd"` directly in the `"artifacts"` store. |
+
+Namespaced keys (`{store}.{key}`) route to a specific store. If the prefix doesn't match any store name, the key is treated as a plain key and all stores are scanned.
+
+```python
+architect = AgentActor(
+    name="architect",
+    role=architect_role,
+    context_keys=["artifacts.project", "artifacts.prd"],  # explicit store targeting
+)
+```
 
 ## Writing Custom Runtimes
 

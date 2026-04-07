@@ -195,6 +195,51 @@ async def test_context_provider_no_stores(feature):
     assert result == ""
 
 
+# --- DefaultContextProvider namespaced keys ---
+
+
+async def test_context_provider_namespaced_key(feature):
+    """'artifacts.prd' resolves 'prd' from the 'artifacts' store."""
+    store = InMemoryStore()
+    await store.put("prd", "The PRD", feature=feature)
+    provider = DefaultContextProvider(stores={"artifacts": store})
+    result = await provider.resolve(["artifacts.prd"], feature=feature)
+    assert "The PRD" in result
+    assert "## artifacts.prd" in result
+
+
+async def test_context_provider_namespaced_skips_other_stores(feature):
+    """Namespaced key targets only the named store, not others."""
+    store_a = InMemoryStore()
+    store_b = InMemoryStore()
+    await store_b.put("secret", "from B", feature=feature)
+    provider = DefaultContextProvider(stores={"a": store_a, "b": store_b})
+    # "a.secret" looks in store "a" only — store "b" has it but isn't checked
+    result = await provider.resolve(["a.secret"], feature=feature)
+    assert result == ""
+
+
+async def test_context_provider_namespaced_unknown_store_falls_back(feature):
+    """If the prefix doesn't match a store name, fall back to scanning all."""
+    store = InMemoryStore()
+    await store.put("unknown.prd", "Dotted key", feature=feature)
+    provider = DefaultContextProvider(stores={"artifacts": store})
+    result = await provider.resolve(["unknown.prd"], feature=feature)
+    assert "Dotted key" in result
+
+
+async def test_context_provider_namespaced_and_plain_same_data(feature):
+    """Same data accessible via namespaced and plain keys."""
+    store = InMemoryStore()
+    await store.put("prd", "The PRD", feature=feature)
+    provider = DefaultContextProvider(stores={"artifacts": store})
+
+    namespaced = await provider.resolve(["artifacts.prd"], feature=feature)
+    plain = await provider.resolve(["prd"], feature=feature)
+    assert "The PRD" in namespaced
+    assert "The PRD" in plain
+
+
 # --- DefaultContextProvider backward compat: artifacts= ---
 
 

@@ -132,9 +132,15 @@ class InMemorySessionStore(SessionStore):
 class DefaultContextProvider(ContextProvider):
     """Context provider backed by named stores and optional static files.
 
-    Resolves each context key by checking static files first, then
-    searching all registered stores in insertion order.  First non-None
-    value wins.
+    Keys can be **namespaced** (``"artifacts.prd"``) to target a specific
+    store, or **plain** (``"prd"``) to scan all stores in insertion order.
+
+    Resolution order for each key:
+
+    1. Static files — exact match on the full key
+    2. Namespaced lookup — if the key contains ``.`` and the prefix
+       matches a registered store name, look up the suffix in that store
+    3. Fallback scan — try every store; first non-None wins
     """
 
     def __init__(
@@ -163,10 +169,26 @@ class DefaultContextProvider(ContextProvider):
             if key in self.static_files:
                 content = self.static_files[key].read_text()
             else:
-                for store in self.stores.values():
-                    content = await store.get(key, feature=feature)
-                    if content is not None:
-                        break
+                content = await self._resolve_from_stores(key, feature=feature)
             if content:
                 sections.append(f"## {key}\n\n{content}")
         return "\n\n---\n\n".join(sections)
+
+    async def _resolve_from_stores(
+        self, key: str, *, feature: Feature
+    ) -> Any | None:
+        # Namespaced: "artifacts.prd" → look up "prd" in "artifacts" store
+        dot = key.find(".")
+        if dot > 0:
+            store_name, store_key = key[:dot], key[dot + 1:]
+            if store_name in self.stores:
+                return await self.stores[store_name].get(
+                    store_key, feature=feature
+                )
+
+        # Plain key or prefix didn't match — scan all stores
+        for store in self.stores.values():
+            content = await store.get(key, feature=feature)
+            if content is not None:
+                return content
+        return None
