@@ -23,6 +23,25 @@ def to_str(value: Any) -> str:
     return str(value)
 
 
+def _gate_feedback_from_choice(choice: Any) -> str | None:
+    """Extract structured gate feedback from runtime-specific rejection objects.
+
+    Build-v2's Slack/CLI interaction runtimes can return a rejection object with a
+    ``feedback`` attribute instead of the legacy ``"Give feedback"`` sentinel.
+    Treat that as equivalent to a feedback-bearing rejection while preserving
+    compatibility with older runtimes that still return raw strings/bools.
+    """
+    if isinstance(choice, dict):
+        feedback = choice.get("feedback")
+        if isinstance(feedback, str):
+            return feedback
+        return None
+    feedback = getattr(choice, "feedback", None)
+    if isinstance(feedback, str):
+        return feedback
+    return None
+
+
 class Task(BaseModel, ABC):
     """Base class for all task types."""
 
@@ -161,12 +180,16 @@ class Gate(Task):
             ),
             feature,
         )
+        structured_feedback = _gate_feedback_from_choice(choice)
+        if structured_feedback is not None:
+            feedback = structured_feedback.strip()
+            return feedback if feedback else False
         if choice == "Give feedback":
             return await runner.run(
                 Ask(actor=self.approver, prompt="Please provide your feedback:"),
                 feature,
             )
-        return choice == "Approve"
+        return choice is True or choice == "Approve"
 
 
 class Choose(Task):
