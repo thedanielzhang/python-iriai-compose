@@ -2,7 +2,9 @@ from pydantic import BaseModel
 
 from iriai_compose import AgentActor, InteractionActor, Role
 from iriai_compose.prompts import Select
-from iriai_compose.tasks import Ask, Choose, Gate, Interview, Respond
+from iriai_compose.tasks import Ask
+
+from examples._composite_tasks import Choose, Gate, Interview, Respond
 
 
 def test_ask_construction():
@@ -71,7 +73,7 @@ def test_ask_to_prompt_with_string_input():
     assert result == "Review this\n\nsome code here"
 
 
-def test_interview_construction():
+def test_example_interview_construction():
     role = Role(name="pm", prompt="PM")
     questioner = AgentActor(name="pm", role=role)
     responder = InteractionActor(name="user", resolver="human")
@@ -85,7 +87,7 @@ def test_interview_construction():
     assert task.done("anything") is True
 
 
-def test_interview_done_predicate():
+def test_example_interview_done_predicate():
     role = Role(name="pm", prompt="PM")
     questioner = AgentActor(name="pm", role=role)
     responder = InteractionActor(name="user", resolver="human")
@@ -99,19 +101,19 @@ def test_interview_done_predicate():
     assert task.done("not done") is False
 
 
-def test_gate_construction():
+def test_example_gate_construction():
     human = InteractionActor(name="user", resolver="human")
     task = Gate(approver=human, prompt="Approve?")
     assert task.prompt == "Approve?"
 
 
-def test_choose_construction():
+def test_example_choose_construction():
     human = InteractionActor(name="user", resolver="human")
     task = Choose(chooser=human, prompt="Pick one", options=["A", "B", "C"])
     assert task.options == ["A", "B", "C"]
 
 
-def test_respond_construction():
+def test_example_respond_construction():
     human = InteractionActor(name="user", resolver="human")
     task = Respond(responder=human, prompt="Tell me more")
     assert task.prompt == "Tell me more"

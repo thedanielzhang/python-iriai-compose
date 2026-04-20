@@ -1,5 +1,11 @@
 # iriai-compose: Unified Library Specification
 
+> Historical note
+> This spec references `Interview`, `Gate`, `Choose`, and `Respond` as design
+> patterns, but they are no longer exported by the public `iriai-compose`
+> library API. Current example implementations live under
+> [`examples/_composite_tasks.py`](examples/_composite_tasks.py).
+
 A Python library for composing multi-agent workflows. Runtime-agnostic core, ergonomic phase authoring, actor-neutral task definitions.
 
 ---

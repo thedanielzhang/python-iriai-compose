@@ -1,5 +1,11 @@
 # iriai-sdk: Slack Bot Integration Guide
 
+> Historical note
+> This document references composite tasks like `Gate` and `Interview` as
+> workflow patterns. Those composites are no longer exported by the public
+> `iriai-compose` library API; current example implementations live under
+> [`examples/_composite_tasks.py`](examples/_composite_tasks.py).
+
 How `iriai-build` maps onto the `iriai-sdk` library, including the persistence layer.
 
 This document uses `iriai-build` (the existing Slack-based agent orchestrator) as the reference application. It shows how each piece of the current system maps to the library's abstractions and where Postgres replaces the current SQLite + filesystem signal approach.

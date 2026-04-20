@@ -6,7 +6,8 @@ from iriai_compose import (
     Role,
     TaskExecutionError,
 )
-from iriai_compose.tasks import Ask, Gate
+from examples._composite_tasks import Gate
+from iriai_compose.tasks import Ask
 
 
 def test_iriai_error_hierarchy():

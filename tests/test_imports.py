@@ -4,7 +4,7 @@ import iriai_compose
 def test_all_public_names_importable():
     expected = [
         "Actor", "AgentActor", "InteractionActor", "Role",
-        "Task", "Ask", "Interview", "Gate", "Choose", "Respond",
+        "Task", "Ask",
         "Select", "Confirm",
         "Phase", "Workflow", "Feature", "Workspace",
         "WorkflowRunner", "DefaultWorkflowRunner",
@@ -22,7 +22,7 @@ def test_all_public_names_importable():
 def test_all_matches_expected():
     expected = {
         "Actor", "AgentActor", "InteractionActor", "Role",
-        "Task", "Ask", "Interview", "Gate", "Choose", "Respond",
+        "Task", "Ask",
         "Select", "Confirm",
         "Phase", "Workflow", "Feature", "Workspace",
         "WorkflowRunner", "DefaultWorkflowRunner",

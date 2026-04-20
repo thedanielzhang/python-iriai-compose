@@ -1,12 +1,11 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from iriai_compose.actors import Actor
-from iriai_compose.prompts import Select
 
 if TYPE_CHECKING:
     from iriai_compose.runner import WorkflowRunner
@@ -21,25 +20,6 @@ def to_str(value: Any) -> str:
     if isinstance(value, BaseModel):
         return value.model_dump_json(indent=2)
     return str(value)
-
-
-def _gate_feedback_from_choice(choice: Any) -> str | None:
-    """Extract structured gate feedback from runtime-specific rejection objects.
-
-    Build-v2's Slack/CLI interaction runtimes can return a rejection object with a
-    ``feedback`` attribute instead of the legacy ``"Give feedback"`` sentinel.
-    Treat that as equivalent to a feedback-bearing rejection while preserving
-    compatibility with older runtimes that still return raw strings/bools.
-    """
-    if isinstance(choice, dict):
-        feedback = choice.get("feedback")
-        if isinstance(feedback, str):
-            return feedback
-        return None
-    feedback = getattr(choice, "feedback", None)
-    if isinstance(feedback, str):
-        return feedback
-    return None
 
 
 class Task(BaseModel, ABC):
@@ -104,136 +84,3 @@ class Ask(Task):
         self, runner: WorkflowRunner, feature: Feature, **kwargs: Any
     ) -> Any:
         return await runner.resolve(self, feature, **kwargs)
-
-
-# ---------------------------------------------------------------------------
-# Composite tasks — composed of Asks
-# ---------------------------------------------------------------------------
-
-
-class Interview(Task):
-    """Multi-turn: questioner asks, responder answers, loop until done."""
-
-    questioner: Actor
-    responder: Actor
-    initial_prompt: str
-    output_type: type[BaseModel] | None = None
-    done: Callable[[Any], bool]
-
-    async def execute(
-        self, runner: WorkflowRunner, feature: Feature, **kwargs: Any
-    ) -> Any:
-        response = await runner.run(
-            Ask(
-                actor=self.questioner,
-                prompt=self.initial_prompt,
-                context_keys=self.context_keys,
-                output_type=self.output_type,
-            ),
-            feature,
-        )
-
-        if self.done(response):
-            return response
-
-        while True:
-            answer = await runner.run(
-                Ask(actor=self.responder, prompt=to_str(response)),
-                feature,
-            )
-            result = await runner.run(
-                Ask(
-                    actor=self.questioner,
-                    prompt=f"The user responded:\n\n{to_str(answer)}",
-                    context_keys=self.context_keys,
-                    output_type=self.output_type,
-                    continuation=True,
-                ),
-                feature,
-            )
-            if self.done(result):
-                return result
-            response = result
-
-
-class Gate(Task):
-    """Approval: one actor approves, rejects, or gives feedback.
-
-    Composes Asks internally — presents a selection, then optionally
-    collects free-form feedback.  Returns ``True`` (approved),
-    ``False`` (rejected), or a feedback string.
-    """
-
-    approver: Actor
-    prompt: str
-
-    async def execute(
-        self, runner: WorkflowRunner, feature: Feature, **kwargs: Any
-    ) -> Any:
-        choice = await runner.run(
-            Ask(
-                actor=self.approver,
-                prompt=self.prompt,
-                input=Select(options=["Approve", "Reject", "Give feedback"]),
-                input_type=Select,
-                context_keys=self.context_keys,
-            ),
-            feature,
-        )
-        structured_feedback = _gate_feedback_from_choice(choice)
-        if structured_feedback is not None:
-            feedback = structured_feedback.strip()
-            return feedback if feedback else False
-        if choice == "Give feedback":
-            return await runner.run(
-                Ask(actor=self.approver, prompt="Please provide your feedback:"),
-                feature,
-            )
-        return choice is True or choice == "Approve"
-
-
-class Choose(Task):
-    """Selection: one actor picks from options.
-
-    Composes a single Ask with a ``Select`` input.
-    """
-
-    chooser: Actor
-    prompt: str
-    options: list[str]
-
-    async def execute(
-        self, runner: WorkflowRunner, feature: Feature, **kwargs: Any
-    ) -> Any:
-        return await runner.run(
-            Ask(
-                actor=self.chooser,
-                prompt=self.prompt,
-                input=Select(options=self.options),
-                input_type=Select,
-                context_keys=self.context_keys,
-            ),
-            feature,
-        )
-
-
-class Respond(Task):
-    """Free-form: one actor provides open-ended input.
-
-    Composes a single plain Ask.
-    """
-
-    responder: Actor
-    prompt: str
-
-    async def execute(
-        self, runner: WorkflowRunner, feature: Feature, **kwargs: Any
-    ) -> Any:
-        return await runner.run(
-            Ask(
-                actor=self.responder,
-                prompt=self.prompt,
-                context_keys=self.context_keys,
-            ),
-            feature,
-        )

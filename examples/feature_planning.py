@@ -21,16 +21,18 @@ from iriai_compose import (
     Ask,
     DefaultWorkflowRunner,
     Feature,
-    Gate,
     InMemoryStore,
     InteractionActor,
-    Interview,
     Phase,
     Role,
     Workflow,
     Workspace,
 )
 from iriai_compose.runtimes import AutoApproveRuntime, TerminalInteractionRuntime
+try:
+    from examples._composite_tasks import Gate, Interview
+except ImportError:  # pragma: no cover - direct script execution fallback
+    from _composite_tasks import Gate, Interview
 
 from runtime import EchoAgentRuntime
 

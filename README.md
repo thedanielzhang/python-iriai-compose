@@ -2,6 +2,12 @@
 
 Runtime-agnostic, actor-neutral workflow orchestration for multi-agent systems.
 
+> Note
+> `Interview`, `Gate`, `Choose`, and `Respond` are no longer part of the
+> public `iriai-compose` library API. Example-local versions live under
+> [`examples/_composite_tasks.py`](examples/_composite_tasks.py) in the source
+> tree; that file is reference material, not part of the installed package.
+
 ## Overview
 
 iriai-compose provides a structured way to orchestrate workflows involving multiple agents and human interactions. It separates **what** happens (tasks and phases) from **who** does it (actors) and **how** it runs (runtimes), making workflows portable across different agent backends and interaction methods.
@@ -11,7 +17,7 @@ iriai-compose provides a structured way to orchestrate workflows involving multi
 ### Key Concepts
 
 - **Ask** — The atomic task type. One prompt, one actor, one response. Every other task composes Asks.
-- **Composite Tasks** — `Gate`, `Choose`, `Respond`, `Interview` — higher-level interaction patterns built from Asks
+- **Source Examples** — the repository includes example-local composite-task patterns under `examples/` for reference
 - **Actors** — Either AI agents (`AgentActor`) or humans (`InteractionActor`), each with a `resolver` that routes to a runtime
 - **Runtimes** — Pluggable backends that implement a single `ask()` method. `AgentRuntime` for LLMs, `InteractionRuntime` for human UIs
 - **Stores** — Named, pluggable persistence backends that implement `get()`/`put()`/`delete()`. The runner holds multiple named stores via `stores: dict[str, Store]`
@@ -41,7 +47,7 @@ from pydantic import BaseModel
 
 from iriai_compose import (
     AgentActor, AgentRuntime, Ask, DefaultWorkflowRunner,
-    Feature, Gate, InMemoryStore, InteractionActor, Phase,
+    Feature, InMemoryStore, InteractionActor, Phase,
     Role, Workflow, Workspace,
 )
 from iriai_compose.runtimes import TerminalInteractionRuntime
@@ -81,10 +87,7 @@ class ReviewPhase(Phase):
             Ask(actor=reviewer, prompt="Review the code."),
             feature,
         )
-        approved = await runner.run(
-            Gate(approver=human, prompt="Accept this review?"),
-            feature,
-        )
+        state.review = review
         return state
 
 
@@ -113,14 +116,23 @@ async def main():
 asyncio.run(main())
 ```
 
-See [`examples/`](examples/) for complete runnable examples.
+See the repository's [`examples/`](examples/) directory for complete runnable examples.
+
+## Migration Note
+
+As of `0.3.0`, `Interview`, `Gate`, `Choose`, and `Respond` have moved out of
+the public library API. If you still want those higher-level interaction
+patterns, copy or vendor the example-owned implementations into your
+application layer. If you are browsing the source checkout, the reference
+implementation lives at [`examples/_composite_tasks.py`](examples/_composite_tasks.py),
+but that module is not shipped as part of the installed wheel.
 
 ## Architecture
 
 ```
 Workflow (template)
   Phase (orchestration unit)
-    Task (Ask, Interview, Gate, Choose, Respond)
+    Task (Ask + application/example-owned composites)
       Ask (atomic — the only task that reaches the runtime)
         Actor (AgentActor or InteractionActor)
           Runtime (AgentRuntime or InteractionRuntime)
@@ -143,7 +155,7 @@ runner.run(task)                           # lifecycle hooks (on_start/on_done)
 ```
 
 - **Leaf tasks** (Ask) pass themselves to the runtime via `runner.resolve()`
-- **Composite tasks** (Gate, Choose, Respond, Interview) orchestrate Asks via `runner.run()` in their `execute()`
+- **Example-owned composite tasks** can orchestrate Asks via `runner.run()` in their `execute()`
 - The **runner** handles context resolution and routes to runtimes via `actor.resolver`
 - Each **runtime** receives the full Ask task and decides how to use its fields
 
@@ -152,10 +164,6 @@ runner.run(task)                           # lifecycle hooks (on_start/on_done)
 | Task | Type | Description |
 |------|------|-------------|
 | `Ask` | Atomic | One-shot prompt/response. The only task that reaches the runtime. |
-| `Gate` | Composite | Approval checkpoint. Presents Approve/Reject/Give feedback, returns `True`/`False`/`str`. |
-| `Choose` | Composite | Selection from options. Wraps an Ask with `Select` input. |
-| `Respond` | Composite | Free-form input. Wraps a plain Ask. |
-| `Interview` | Composite | Multi-turn conversation loop between a questioner and responder. |
 
 ### Ask Fields
 
@@ -394,7 +402,8 @@ class ScholarshipAsk(Ask):
 
 ### Code Review Workflow
 
-An agent reviews code, a human approves:
+An agent reviews code, a human approves. The snippet assumes your application
+defines local `Respond`/`Gate` helpers built on top of `Ask`:
 
 ```python
 class ReviewPhase(Phase):
@@ -421,7 +430,9 @@ class ReviewPhase(Phase):
 
 ### Multi-Agent Feature Planning
 
-PM interviews a human, architect designs, validators review in parallel:
+PM interviews a human, architect designs, validators review in parallel. The
+snippet assumes your application defines local `Interview`/`Gate` helpers built
+on top of `Ask`:
 
 ```python
 class DiscoveryPhase(Phase):

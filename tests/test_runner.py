@@ -21,8 +21,10 @@ from iriai_compose import (
     Workflow,
 )
 from iriai_compose.prompts import Select
-from iriai_compose.tasks import Ask, Gate, Interview, Respond, Choose, Task
+from iriai_compose.tasks import Ask, Task
 from tests.conftest import MockAgentRuntime, MockInteractionRuntime
+
+from examples._composite_tasks import Choose, Gate, Interview, Respond
 
 
 @pytest.fixture

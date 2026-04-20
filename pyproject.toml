@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "iriai-compose"
-version = "0.2.0"
+version = "0.3.0"
 description = "Runtime-agnostic, actor-neutral workflow orchestration for multi-agent systems"
 requires-python = ">=3.11"
 dependencies = [

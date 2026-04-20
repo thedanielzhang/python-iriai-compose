@@ -1,5 +1,10 @@
 # Building a Feature Planning Workflow
 
+> Note
+> `Interview`, `Gate`, `Choose`, and `Respond` are no longer public
+> `iriai-compose` tasks. This tutorial defines tiny app-owned helpers inline so
+> the examples work for installed users without relying on repo-only modules.
+
 This tutorial walks through building a production-style, multi-phase workflow using iriai-compose. The workflow mirrors the patterns used in iriai-build's planning pipeline: structured interviews, gate approvals, parallel validation, artifact flow between phases, and context injection into agent prompts.
 
 By the end you'll have a workflow where:
@@ -105,14 +110,90 @@ human = InteractionActor(name="user", resolver="terminal")
 - The `resolver` field on actors routes to a runtime by name. `"terminal"` maps to `TerminalInteractionRuntime`, `"agent"` to your LLM runtime.
 - The same role can back multiple actors with different names and context. Two security reviewers with different context_keys see different artifacts.
 
-## Step 3: Build Phases
+## Step 3: Define App-Owned Interaction Helpers
+
+`iriai-compose` exposes `Ask` as the core interaction primitive. If your
+application wants higher-level patterns like `Respond`, `Interview`, or `Gate`,
+define them locally:
+
+```python
+from iriai_compose import Ask, Task
+from iriai_compose.prompts import Select
+
+
+class Respond(Task):
+    responder: object
+    prompt: str
+
+    async def execute(self, runner, feature):
+        return await runner.run(
+            Ask(actor=self.responder, prompt=self.prompt),
+            feature,
+        )
+
+
+class Interview(Task):
+    questioner: object
+    responder: object
+    initial_prompt: str
+    done: object
+
+    async def execute(self, runner, feature):
+        response = await runner.run(
+            Ask(actor=self.questioner, prompt=self.initial_prompt),
+            feature,
+        )
+        while not self.done(response):
+            answer = await runner.run(
+                Ask(actor=self.responder, prompt=str(response)),
+                feature,
+            )
+            response = await runner.run(
+                Ask(
+                    actor=self.questioner,
+                    prompt=f"User says:\\n\\n{answer}",
+                    continuation=True,
+                ),
+                feature,
+            )
+        return response
+
+
+class Gate(Task):
+    approver: object
+    prompt: str
+
+    async def execute(self, runner, feature):
+        choice = await runner.run(
+            Ask(
+                actor=self.approver,
+                prompt=self.prompt,
+                input=Select(options=["Approve", "Reject", "Give feedback"]),
+                input_type=Select,
+            ),
+            feature,
+        )
+        if choice in {True, "Approve"}:
+            return True
+        if choice == "Give feedback":
+            return await runner.run(
+                Ask(actor=self.approver, prompt="Please provide your feedback:"),
+                feature,
+            )
+        return False
+```
+
+These helpers live in your application layer; `iriai-compose` itself stays
+focused on orchestration primitives.
+
+## Step 4: Build Phases
 
 ### Phase 1: Scoping
 
 Seed context and gather the feature description from the human.
 
 ```python
-from iriai_compose import Ask, Interview, Phase, Respond
+from iriai_compose import Phase
 
 
 class ScopingPhase(Phase):
@@ -178,9 +259,6 @@ class DiscoveryPhase(Phase):
 The architect designs the system, then the human approves or requests revisions.
 
 ```python
-from iriai_compose import Gate
-
-
 class DesignPhase(Phase):
     name = "design"
 

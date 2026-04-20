@@ -21,11 +21,16 @@ if TYPE_CHECKING:
 
 def _extract_agent_actors(task: Task) -> list[AgentActor]:
     """Extract all AgentActor references from a task for collision detection."""
-    actors = []
-    for field in ("actor", "questioner", "responder", "approver", "chooser"):
+    actors: list[AgentActor] = []
+    fields = getattr(type(task), "model_fields", {})
+    for field in fields:
         val = getattr(task, field, None)
         if isinstance(val, AgentActor):
             actors.append(val)
+        elif isinstance(val, (list, tuple, set)):
+            actors.extend(item for item in val if isinstance(item, AgentActor))
+        elif isinstance(val, dict):
+            actors.extend(item for item in val.values() if isinstance(item, AgentActor))
     return actors
 
 # Context variable for phase name — safe under concurrent async workflows.

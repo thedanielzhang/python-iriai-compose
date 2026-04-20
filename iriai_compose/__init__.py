@@ -22,7 +22,7 @@ from iriai_compose.storage import (
     SessionStore,
     Store,
 )
-from iriai_compose.tasks import Ask, Choose, Gate, Interview, Respond, Task, to_str
+from iriai_compose.tasks import Ask, Task, to_str
 from iriai_compose.workflow import Feature, Phase, Workflow, Workspace
 
 __all__ = [
@@ -34,10 +34,6 @@ __all__ = [
     # tasks
     "Task",
     "Ask",
-    "Interview",
-    "Gate",
-    "Choose",
-    "Respond",
     "to_str",
     # prompts (input types)
     "Select",

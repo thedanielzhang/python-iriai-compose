@@ -18,19 +18,20 @@ from pydantic import BaseModel
 from iriai_compose import (
     AgentActor,
     Ask,
-    Choose,
     DefaultWorkflowRunner,
     Feature,
-    Gate,
     InMemoryStore,
     InteractionActor,
     Phase,
-    Respond,
     Role,
     Workflow,
     Workspace,
 )
 from iriai_compose.runtimes import AutoApproveRuntime, TerminalInteractionRuntime
+try:
+    from examples._composite_tasks import Choose, Gate, Respond
+except ImportError:  # pragma: no cover - direct script execution fallback
+    from _composite_tasks import Choose, Gate, Respond
 
 from runtime import EchoAgentRuntime
 

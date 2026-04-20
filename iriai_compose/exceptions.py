@@ -40,8 +40,13 @@ class TaskExecutionError(IriaiError):
     @staticmethod
     def _extract_actor_names(task: Task) -> str:
         names = []
-        for field_name in ["actor", "questioner", "responder", "approver", "chooser"]:
+        fields = getattr(type(task), "model_fields", {})
+        for field_name in fields:
             actor = getattr(task, field_name, None)
-            if actor:
+            if hasattr(actor, "name"):
                 names.append(actor.name)
+            elif isinstance(actor, (list, tuple, set)):
+                names.extend(item.name for item in actor if hasattr(item, "name"))
+            elif isinstance(actor, dict):
+                names.extend(item.name for item in actor.values() if hasattr(item, "name"))
         return ", ".join(names) or "unknown"

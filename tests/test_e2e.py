@@ -10,7 +10,6 @@ from iriai_compose import (
     Ask,
     DefaultWorkflowRunner,
     Feature,
-    Gate,
     InMemoryStore,
     InteractionActor,
     Phase,
@@ -20,6 +19,8 @@ from iriai_compose import (
 )
 from iriai_compose.runtimes import AutoApproveRuntime
 from tests.conftest import MockAgentRuntime
+
+from examples._composite_tasks import Gate
 
 
 class E2EState(BaseModel):

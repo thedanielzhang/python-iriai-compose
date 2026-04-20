@@ -1,5 +1,12 @@
 # iriai-sdk: Agent Workflow Library Specification
 
+> Historical note
+> This spec still discusses `Interview`, `Gate`, and related interaction
+> patterns for design context, but those composites are no longer exported by
+> the public `iriai-compose` library API. Current example implementations live
+> under [`examples/_composite_tasks.py`](examples/_composite_tasks.py) in the
+> source tree and should be treated as application-owned patterns.
+
 A Python library for composing agent workflows, built on the Claude Agent SDK.
 
 ---
@@ -7,11 +14,11 @@ A Python library for composing agent workflows, built on the Claude Agent SDK.
 ## Design Principles
 
 1. **Roles are lenses, not job descriptions.** A Role defines expertise and perspective — nothing about interaction pattern, output format, or orchestration behavior.
-2. **Tasks are atomic.** Each Task does exactly one thing: invoke an agent, interview a human, approve a gate, run things in parallel.
+2. **Tasks are atomic.** The built-in task surface stays small: `Ask` reaches a runtime once, and coordination primitives like `Parallel` combine tasks without introducing new installed interaction types. Higher-level interview/gate flows are application-owned compositions, not built-in task primitives.
 3. **Phases own control flow.** Branching, loops, retries, and conditional logic live in Phases, which compose Tasks.
 4. **Workflows are templates.** A Workflow is a reusable sequence of Phases. A Feature is a specific execution of a Workflow with its own workspace and state.
 5. **Context is injected, not owned.** No object owns context. A ContextProvider resolves keys to content, scoped to the Task (not the agent).
-6. **Human interaction is a first-class primitive.** `request()` is fundamentally different from `invoke()` — it suspends the workflow and produces a `Pending` that can be inspected, persisted, and resolved externally.
+6. **Human interaction is a first-class runner primitive.** `request()` is fundamentally different from `invoke()` — it suspends the workflow and produces a `Pending` that can be inspected, persisted, and resolved externally. Application-owned interview/gate helpers can build on `request()` without becoming part of the installed task API.
 
 ---
 
@@ -24,7 +31,7 @@ Iriai               — runtime             — manages all features
 Feature             — instance            — one piece of work (name + state + workspace)
 Workflow            — template            — reusable phase sequence
 Phase               — task group          — tasks + control flow (branching, loops)
-Task                — atomic operation    — Interview, Ask, Gate, Choose, Parallel
+Task                — atomic operation    — Ask (+ app-owned composites)
 Workspace           — physical context    — worktrees, branches, artifacts
 Role                — expertise           — agent config (prompt, tools, model)
 Agent               — running instance    — session state, resumable
@@ -179,6 +186,21 @@ class Ask(Task):
     async def run(self, prompt: str, output_type=None) -> str | BaseModel:
         ...
 
+class Parallel(Task):
+    """Run multiple tasks concurrently."""
+    def __init__(self, tasks: list[Task]):
+        ...
+    async def run(self, input) -> list:
+        return await asyncio.gather(*[t.run(input) for t in self.tasks])
+```
+
+### Example Composite Task Patterns (application-owned)
+
+These patterns used to ship as public library tasks, but in `0.3.0` they moved
+out of the installed API. They remain useful reference designs for application
+layers that want richer human-interaction workflows on top of `Ask`.
+
+```python
 class Interview(Task):
     """Multi-turn: agent asks questions, human answers, loop until
     agent produces typed output with no remaining questions."""
@@ -207,13 +229,6 @@ class Choose(Task):
         ...
     async def run(self, context=None) -> str:
         return await self.request("choose", self.prompt, evidence=context, options=self.options)
-
-class Parallel(Task):
-    """Run multiple tasks concurrently."""
-    def __init__(self, tasks: list[Task]):
-        ...
-    async def run(self, input) -> list:
-        return await asyncio.gather(*[t.run(input) for t in self.tasks])
 ```
 
 ### Three Primitives
@@ -247,17 +262,26 @@ class Phase:
         raise NotImplementedError
 ```
 
-**Example:**
+**Example using only current primitives (`Ask` + `request()`):**
 
 ```python
 class Planning(Phase):
     async def run(self, scoping: ScopingResult, workspace, store) -> Plan:
-        # Interview — multi-turn with human
-        prd = await Interview(pm, context=["project"]).run(
-            f"Analyze this scope. What questions do you have?\n{scoping}"
+        # One-shot ask for an initial PRD draft
+        prd = await Ask(pm, context=["project"]).run(
+            f"Analyze this scope and draft a PRD.\n{scoping}",
+            output_type=PRD,
         )
         await store.put("prd", self.feature, prd)
-        await Gate("Approve PRD").run(prd)
+
+        # Suspend for human approval using the built-in request primitive
+        prd_feedback = await self.request("approve", "Approve PRD?", evidence=prd)
+        if prd_feedback is not True:
+            prd = await Ask(pm, context=["project"]).run(
+                f"Revise the PRD using this feedback:\n{prd_feedback}",
+                output_type=PRD,
+            )
+            await store.put("prd", self.feature, prd)
 
         # One-shot — agent produces output directly
         design = await Ask(designer, context=["project", "prd"]).run(
@@ -265,17 +289,29 @@ class Planning(Phase):
         )
         await store.put("design", self.feature, design)
 
-        # Choice — if designer proposes alternatives
+        # Suspend for a human choice if the designer proposes alternatives
         if design.alternatives:
-            choice = await Choose("Which approach?", design.alternatives).run(design)
+            choice = await self.request(
+                "choose",
+                "Which approach?",
+                evidence=design,
+                options=design.alternatives,
+            )
             design = await Ask(designer, context=["project", "prd"]).run(
                 f"Finalize with approach: {choice}", output_type=DesignDecisions
             )
-        await Gate("Approve design").run(design)
+        design_feedback = await self.request("approve", "Approve design?", evidence=design)
+        if design_feedback is not True:
+            design = await Ask(designer, context=["project", "prd"]).run(
+                f"Revise the design using this feedback:\n{design_feedback}",
+                output_type=DesignDecisions,
+            )
+            await store.put("design", self.feature, design)
 
-        # Interview — architect asks technical questions
-        plan = await Interview(architect, context=["project", "prd", "design"]).run(
-            "What technical questions do you have?"
+        # Produce a technical plan directly
+        plan = await Ask(architect, context=["project", "prd", "design"]).run(
+            "Produce a technical plan for implementation.",
+            output_type=Plan,
         )
 
         # Loop — validate until plan compiles
@@ -291,7 +327,17 @@ class Planning(Phase):
             )
 
         await store.put("plan", self.feature, plan)
-        await Gate("Approve plan for implementation?").run(plan)
+        plan_feedback = await self.request(
+            "approve",
+            "Approve plan for implementation?",
+            evidence=plan,
+        )
+        if plan_feedback is not True:
+            plan = await Ask(architect, context=["project", "prd", "design"]).run(
+                f"Revise the plan using this feedback:\n{plan_feedback}",
+                output_type=Plan,
+            )
+            await store.put("plan", self.feature, plan)
         return plan
 ```
 
@@ -741,6 +787,10 @@ async def request(self, kind, prompt, evidence=None, options=None):
 
 ## Full Pipeline Example
 
+This end-to-end sketch uses only the current installed primitives. If an
+application wants richer interview/gate helpers, it can wrap the repeated
+`request()` and `Ask(...)` patterns in local composite tasks.
+
 ```python
 # --- Roles ---
 pm = Role(name="pm", prompt="You understand user needs and requirement clarity.", tools=["Read", "Glob", "Grep"])
@@ -752,17 +802,47 @@ reviewer = Role(name="reviewer", prompt="You evaluate correctness and adherence 
 # --- Phases ---
 class Planning(Phase):
     async def run(self, scoping, workspace, store):
-        prd = await Interview(pm, context=["project"]).run(f"Analyze: {scoping}", output_type=PRD)
+        prd = await Ask(pm, context=["project"]).run(f"Analyze: {scoping}", output_type=PRD)
         await store.put("prd", self.feature, prd)
-        await Gate("Approve PRD").run(prd)
+        prd_feedback = await self.request("approve", "Approve PRD?", evidence=prd)
+        if prd_feedback is not True:
+            prd = await Ask(pm, context=["project"]).run(
+                f"Revise PRD with feedback: {prd_feedback}",
+                output_type=PRD,
+            )
+            await store.put("prd", self.feature, prd)
 
         design = await Ask(designer, context=["project", "prd"]).run("Produce design", output_type=Design)
         await store.put("design", self.feature, design)
-        await Gate("Approve design").run(design)
+        if design.alternatives:
+            choice = await self.request(
+                "choose",
+                "Which design approach should we take?",
+                evidence=design,
+                options=design.alternatives,
+            )
+            design = await Ask(designer, context=["project", "prd"]).run(
+                f"Finalize with approach: {choice}",
+                output_type=Design,
+            )
+            await store.put("design", self.feature, design)
+        design_feedback = await self.request("approve", "Approve design?", evidence=design)
+        if design_feedback is not True:
+            design = await Ask(designer, context=["project", "prd"]).run(
+                f"Revise design with feedback: {design_feedback}",
+                output_type=Design,
+            )
+            await store.put("design", self.feature, design)
 
-        plan = await Interview(architect, context=["project", "prd", "design"]).run("Plan this", output_type=Plan)
+        plan = await Ask(architect, context=["project", "prd", "design"]).run("Plan this", output_type=Plan)
         await store.put("plan", self.feature, plan)
-        await Gate("Approve plan").run(plan)
+        plan_feedback = await self.request("approve", "Approve plan?", evidence=plan)
+        if plan_feedback is not True:
+            plan = await Ask(architect, context=["project", "prd", "design"]).run(
+                f"Revise plan with feedback: {plan_feedback}",
+                output_type=Plan,
+            )
+            await store.put("plan", self.feature, plan)
 
         return plan
 
@@ -777,7 +857,15 @@ class Implementation(Phase):
                 Ask(reviewer, context=["project", "plan", "implementation"]),
             ]).run(results)
 
-            await Gate(f"Approve {phase_spec.name}").run(verdicts)
+            phase_feedback = await self.request(
+                "approve",
+                f"Approve {phase_spec.name}?",
+                evidence=verdicts,
+            )
+            if phase_feedback is not True:
+                raise RuntimeError(
+                    f"Implementation phase {phase_spec.name} requires revision: {phase_feedback}"
+                )
 
         return ImplementationResult(...)
 
